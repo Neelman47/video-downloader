@@ -541,7 +541,10 @@ router.post('/voice/dub', upload.fields([
     separationMode = 'auto',
     apiKey,
     transcriptText,
-    outputName
+    outputName,
+    bgVolume,
+    startOffset,
+    vocalCutLevel
   } = req.body;
 
   if (!inputAudioPath) {
@@ -577,7 +580,10 @@ router.post('/voice/dub', upload.fields([
     separationMode,
     apiKey,
     transcriptText,
-    outputName
+    outputName,
+    bgVolume,
+    startOffset,
+    vocalCutLevel
   }, {
     onProgress: (progress) => {
       const current = jobStore.get(jobId) || initialJobState;

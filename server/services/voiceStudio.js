@@ -1,6 +1,6 @@
 import fs from 'fs';
 import path from 'path';
-import { spawn, execSync } from 'child_process';
+import { spawn, spawnSync, execSync } from 'child_process';
 import { fileURLToPath } from 'url';
 import { EdgeTTS } from '@andresaya/edge-tts';
 import { getDownloadsDir, formatBytes, getTimestampPrefix, SUBFOLDERS } from './storage.js';
@@ -8,7 +8,6 @@ import { getFfmpegPath, sanitizeFileName } from './downloader.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-const rootDir = path.resolve(__dirname, '../../');
 
 const activeDubbingJobs = new Map();
 
@@ -131,30 +130,83 @@ export async function translateTextFree(text, targetLang = 'hi') {
 }
 
 /**
- * Clean and extract dialogue text from an SRT subtitle string
+ * Parse an SRT / VTT subtitle string into timestamped dialogue cues.
+ * Strips music annotations [music], lyrics ♪ ... ♪, sound effects, and speaker labels.
+ * Merges contiguous speech (< 0.7s) to produce naturally paced sentences.
  */
-export function extractTextFromSrt(srtContent) {
-  if (!srtContent) return '';
-  const lines = srtContent.split(/\r?\n/);
-  const clean = [];
-  let last = '';
+export function parseSubtitlesToTimedCues(srtContent) {
+  if (!srtContent) return [];
+  const blocks = srtContent.trim().split(/\r?\n\r?\n/);
+  const rawCues = [];
 
-  for (const raw of lines) {
-    const t = raw.trim();
-    if (!t || /^\d+$/.test(t) || /^\d{2}:\d{2}:\d{2}/.test(t)) continue;
-    const c = t
-      .replace(/&gt;&gt;/g, '')
-      .replace(/>>/g, '')
-      .replace(/\[.*?\]/g, '')
-      .replace(/<.*?>/g, '')
-      .trim();
-    if (c && c !== last) {
-      clean.push(c);
-      last = c;
+  for (const block of blocks) {
+    const lines = block.split(/\r?\n/);
+    if (lines.length < 2) continue;
+    const timeLineIndex = lines[0].includes('-->') ? 0 : (lines[1] && lines[1].includes('-->') ? 1 : -1);
+    if (timeLineIndex === -1) continue;
+    const timeLine = lines[timeLineIndex];
+    const match = timeLine.match(/(\d{2}):(\d{2}):(\d{2})[,.](\d{3})\s*-->\s*(\d{2}):(\d{2}):(\d{2})[,.](\d{3})/);
+    if (!match) continue;
+    const startSec = parseInt(match[1]) * 3600 + parseInt(match[2]) * 60 + parseInt(match[3]) + parseInt(match[4]) / 1000;
+    const endSec = parseInt(match[5]) * 3600 + parseInt(match[6]) * 60 + parseInt(match[7]) + parseInt(match[8]) / 1000;
+    
+    // Ignore micro cues < 80ms
+    if (endSec - startSec < 0.08) continue;
+
+    let textLines = lines.slice(timeLineIndex + 1).join(' ');
+    
+    // Filter out music symbols and lyrics
+    if (/^[\s♪♫\-\[\]\(\)]*$/.test(textLines)) continue;
+    if (textLines.includes('♪') || textLines.includes('♫')) {
+      textLines = textLines.replace(/♪[^♪]*♪/g, '').replace(/♫[^♫]*♫/g, '').replace(/[♪♫]/g, '');
+    }
+    // Remove bracketed effects like [suspenseful music], [laughter], [screaming], etc.
+    textLines = textLines.replace(/\[.*?\]/g, '').replace(/\(.*?\)/g, '');
+    // Remove speaker names like SINGER:, CAITLYN:, MATT:, etc.
+    textLines = textLines.replace(/^[A-Z0-9\s_-]+:\s*/, '').replace(/- /g, '');
+    textLines = textLines.replace(/&gt;&gt;/g, '').replace(/>>/g, '').replace(/<.*?>/g, '').trim();
+
+    if (!textLines || textLines.length < 2 || !/[a-zA-Z0-9]/.test(textLines)) continue;
+
+    rawCues.push({ startSec, endSec, text: textLines });
+  }
+
+  // Merge contiguous cues separated by small pause (< 0.7s) for natural cadence
+  const merged = [];
+  for (const cue of rawCues) {
+    if (merged.length === 0) {
+      merged.push({ ...cue });
+      continue;
+    }
+    const prev = merged[merged.length - 1];
+    if (cue.startSec - prev.endSec < 0.7) {
+      prev.text = prev.text + ' ' + cue.text;
+      prev.endSec = Math.max(prev.endSec, cue.endSec);
+    } else {
+      merged.push({ ...cue });
     }
   }
 
-  return clean.join(' ');
+  return merged;
+}
+
+/**
+ * Clean and extract dialogue text from an SRT subtitle string (backward compatibility)
+ */
+export function extractTextFromSrt(srtContent) {
+  const cues = parseSubtitlesToTimedCues(srtContent);
+  return cues.map((c) => c.text).join(' ');
+}
+
+/**
+ * Detect the start timestamp (in seconds) of the first spoken line from subtitle content
+ */
+export function detectFirstSubtitleTimestamp(srtContent) {
+  const cues = parseSubtitlesToTimedCues(srtContent);
+  if (cues.length > 0) {
+    return Math.max(0, cues[0].startSec - 0.2);
+  }
+  return 0;
 }
 
 /**
@@ -168,9 +220,11 @@ export function findMatchingSubtitleFile(audioPath) {
     const baseName = path.basename(audioPath).replace(/\.[^/.]+$/, '').toLowerCase();
     const files = fs.readdirSync(subDir);
 
-    // Look for video ID in brackets e.g. [OGO4Mqvo3jI]
+    // Look for YouTube video ID in brackets e.g. [OGO4Mqvo3jI]
     const idMatch = baseName.match(/\[([a-zA-Z0-9_-]{11})\]/);
-    const videoId = idMatch ? idMatch[1] : null;
+    const videoId = idMatch ? idMatch[1].toLowerCase() : null;
+
+    const candidates = [];
 
     for (const f of files) {
       if (!f.endsWith('.srt') && !f.endsWith('.vtt')) continue;
@@ -178,14 +232,20 @@ export function findMatchingSubtitleFile(audioPath) {
 
       // Check by video ID if available
       if (videoId && fLower.includes(videoId)) {
-        return path.join(subDir, f);
+        candidates.push(path.join(subDir, f));
       }
 
       // Check by normalized title match
       const strippedBase = baseName.replace(/^[0-9_]+/, '').replace(/\[.*?\]/g, '').trim().slice(0, 20);
       if (strippedBase && fLower.includes(strippedBase)) {
-        return path.join(subDir, f);
+        candidates.push(path.join(subDir, f));
       }
+    }
+
+    if (candidates.length > 0) {
+      // Prioritize official closed captions (e.g. en-US.srt or en.srt)
+      const official = candidates.find((c) => c.toLowerCase().includes('en-us') || c.toLowerCase().includes('_en.'));
+      return official || candidates[0];
     }
   } catch (e) {}
   return null;
@@ -234,7 +294,6 @@ export async function generateTTS(options) {
   const safeTitle = outputName
     ? sanitizeFileName(outputName).replace(/\.[^/.]+$/, '')
     : sanitizeFileName(text.slice(0, 30));
-  
   const targetFileName = `${timestampPrefix}tts_${safeTitle || 'speech'}_${language}_${genderKey}.mp3`;
   const targetDir = getDownloadsDir(SUBFOLDERS.TTS);
   const targetFilePath = path.join(targetDir, targetFileName);
@@ -280,17 +339,22 @@ export function resolveAudioInput(givenPath) {
 
 /**
  * Feature 1: AI Audio Dubbing Pipeline (English -> Hindi or Gujarati)
+ * Synchronizes dialogue timing with subtitles / AI timestamps.
+ * Preserves 100% of background music, fight sounds, action effects, and intro/outro.
  */
 export async function executeDubbing(jobId, options, callbacks) {
   const {
     inputAudioPath,
     targetLanguage = 'hi', // 'hi' | 'gu'
     voiceGender = 'auto',  // 'auto' | 'male' | 'female'
-    separationMode = 'auto', // 'auto' | 'demucs' | 'pure_voice' | 'ffmpeg_filter'
+    separationMode = 'auto', // 'auto' | 'demucs' | 'pure_voice'
     apiKey,
     transcriptText = '',
-    outputName = ''
+    outputName = '',
+    bgVolume = 1.0,
+    startOffset
   } = options;
+
   let currentGender = voiceGender;
   const { onProgress, onComplete, onError } = callbacks;
 
@@ -312,38 +376,73 @@ export async function executeDubbing(jobId, options, callbacks) {
   const safeOutput = outputName ? sanitizeFileName(outputName) : `dubbed_${targetLanguage}_${rawBaseName}`;
   const targetFileName = `${timestampPrefix}${safeOutput}.mp3`;
   const targetDir = getDownloadsDir(SUBFOLDERS.DUBBED);
+  if (!fs.existsSync(targetDir)) {
+    try { fs.mkdirSync(targetDir, { recursive: true }); } catch (e) {}
+  }
   const targetFilePath = path.join(targetDir, targetFileName);
 
-  const tempVocalsPath = path.join(tempDir, `temp_${jobId}_vocals.wav`);
-  const tempBgPath = path.join(tempDir, `temp_${jobId}_background.wav`);
-  const tempDubbedVoicePath = path.join(tempDir, `temp_${jobId}_translated_voice.mp3`);
-  abortController.tempFiles.push(tempVocalsPath, tempBgPath, tempDubbedVoicePath);
+  const ffmpegPath = getFfmpegPath();
 
   try {
     // -------------------------------------------------------------
-    // STAGE 1: Vocal and Background Stem Separation
+    // STAGE 1: Audio Analysis & Subtitle / Timestamp Discovery
     // -------------------------------------------------------------
     onProgress({
-      percent: '15%',
+      percent: '10%',
       status: 'processing',
-      message: 'Stage 1/5: Isolating English vocals and background music...'
+      message: 'Stage 1/5: Measuring audio duration and analyzing scene structure...'
     });
 
-    const sysStatus = checkVoiceSystemStatus();
-    let hasBackgroundTrack = false;
+    // Probe total duration of original audio
+    const probeRes = spawnSync(ffmpegPath, ['-i', resolvedInput], { encoding: 'utf8' });
+    const durMatch = (probeRes.stderr || '').match(/Duration: (\d{2}):(\d{2}):(\d{2})\.(\d{2})/);
+    const totalDurationSec = durMatch
+      ? parseInt(durMatch[1]) * 3600 + parseInt(durMatch[2]) * 60 + parseInt(durMatch[3]) + parseInt(durMatch[4]) / 100
+      : 0;
 
-    if (separationMode === 'pure_voice') {
-      // User says input is clean voiceover without background music
-      hasBackgroundTrack = false;
-    } else if (sysStatus.demucsAvailable && separationMode !== 'ffmpeg_filter') {
-      // Run Python Demucs
+    let dialogueCues = [];
+
+    // Check if user provided transcript containing subtitle timestamps (SRT/VTT)
+    if (transcriptText && transcriptText.includes('-->')) {
+      dialogueCues = parseSubtitlesToTimedCues(transcriptText);
+      if (dialogueCues.length > 0) {
+        console.log(`[Dubber] Using ${dialogueCues.length} dialogue cues from user-provided transcript`);
+      }
+    }
+
+    // Auto-detect matching English subtitle file from downloads/subtitles/
+    if (dialogueCues.length === 0) {
+      const matchingSub = findMatchingSubtitleFile(resolvedInput);
+      if (matchingSub && fs.existsSync(matchingSub)) {
+        try {
+          const srtRaw = fs.readFileSync(matchingSub, 'utf8');
+          dialogueCues = parseSubtitlesToTimedCues(srtRaw);
+          if (dialogueCues.length > 0) {
+            console.log(`[Dubber] Using ${dialogueCues.length} dialogue cues from matching subtitle (${path.basename(matchingSub)})`);
+          }
+        } catch (e) {
+          console.warn('[Dubber] Error parsing matching subtitle:', e.message);
+        }
+      }
+    }
+
+    if (abortController.aborted) return;
+
+    // Optional Demucs stem separation if installed
+    const sysStatus = checkVoiceSystemStatus();
+    let demucsBgPath = null;
+
+    if (separationMode !== 'pure_voice' && sysStatus.demucsAvailable) {
       onProgress({
-        percent: '25%',
+        percent: '20%',
         status: 'processing',
-        message: 'Stage 1/5: Running Python Demucs neural stem separation...'
+        message: 'Stage 1/5: Running Python Demucs stem separation for studio background isolation...'
       });
 
-      await new Promise((resolve, reject) => {
+      const tempBgPath = path.join(tempDir, `temp_${jobId}_demucs_bg.wav`);
+      abortController.tempFiles.push(tempBgPath);
+
+      await new Promise((resolve) => {
         const demucsProc = spawn('demucs', [
           '--two-stems=vocals',
           '-o', tempDir,
@@ -353,77 +452,40 @@ export async function executeDubbing(jobId, options, callbacks) {
 
         demucsProc.on('close', (code) => {
           if (code === 0) {
-            // Demucs outputs to <tempDir>/htdemucs/<track>/vocals.wav and no_vocals.wav
             const demucsOutDir = path.join(tempDir, 'htdemucs', rawBaseName);
-            const demucsVocals = path.join(demucsOutDir, 'vocals.wav');
             const demucsBg = path.join(demucsOutDir, 'no_vocals.wav');
-
             if (fs.existsSync(demucsBg)) {
+              demucsBgPath = tempBgPath;
               try { fs.copyFileSync(demucsBg, tempBgPath); } catch (e) {}
-              hasBackgroundTrack = true;
             }
-            if (fs.existsSync(demucsVocals)) {
-              try { fs.copyFileSync(demucsVocals, tempVocalsPath); } catch (e) {}
-            }
-            resolve();
-          } else {
-            resolve(); // Gracefully fallback to FFmpeg
-          }
-        });
-        demucsProc.on('error', () => resolve());
-      });
-    }
-
-    // If Demucs didn't run or wasn't available, use FFmpeg vocal attenuation filter
-    if (!hasBackgroundTrack && separationMode !== 'pure_voice') {
-      await new Promise((resolve) => {
-        const ffmpegPath = getFfmpegPath();
-        // Phase inversion + low shelf vocal cut for background track
-        const ffmpegProc = spawn(ffmpegPath, [
-          '-i', resolvedInput,
-          '-af', 'pan=stereo|c0=c0-0.5*c1|c1=c1-0.5*c0,equalizer=f=1000:t=q:w=1:g=-8',
-          '-y', tempBgPath
-        ], { windowsHide: true });
-        abortController.processes.push(ffmpegProc);
-
-        ffmpegProc.on('close', (code) => {
-          if (code === 0 && fs.existsSync(tempBgPath)) {
-            hasBackgroundTrack = true;
           }
           resolve();
         });
-        ffmpegProc.on('error', () => resolve());
+        demucsProc.on('error', () => resolve());
       });
     }
 
     if (abortController.aborted) return;
 
     // -------------------------------------------------------------
-    // STAGE 2: Speech Recognition & Translation (EN -> HI / GU)
+    // STAGE 2: Speech Recognition & Timestamp Alignment (Gemini AI Fallback)
     // -------------------------------------------------------------
-    onProgress({
-      percent: '40%',
-      status: 'processing',
-      message: `Stage 2/5: Transcribing and translating English speech to ${targetLanguage === 'gu' ? 'Gujarati' : 'Hindi'}...`
-    });
-
-    let translatedSegments = [];
-
-    // Check if free Gemini API key is provided
     const effectiveApiKey = apiKey || process.env.GEMINI_API_KEY;
 
-    if (effectiveApiKey && fs.existsSync(resolvedInput)) {
+    if (dialogueCues.length === 0 && effectiveApiKey && fs.existsSync(resolvedInput)) {
+      onProgress({
+        percent: '35%',
+        status: 'processing',
+        message: 'Stage 2/5: Gemini AI listening to audio to detect speech timestamps...'
+      });
+
       try {
-        // Pre-convert audio to lightweight 16kHz mono 64kbps MP3 (ideal for speech AI, ~480KB/min)
         const tempGeminiAudio = path.join(tempDir, `temp_${jobId}_gemini_audio.mp3`);
         abortController.tempFiles.push(tempGeminiAudio);
 
-        const sourceForGemini = (hasBackgroundTrack && fs.existsSync(tempVocalsPath)) ? tempVocalsPath : resolvedInput;
-        const ffmpegPath = getFfmpegPath();
-
         await new Promise((resolve) => {
           const proc = spawn(ffmpegPath, [
-            '-i', sourceForGemini,
+            '-i', resolvedInput,
             '-vn',
             '-ac', '1',
             '-ar', '16000',
@@ -440,56 +502,42 @@ export async function executeDubbing(jobId, options, callbacks) {
           const base64Audio = audioBuffer.toString('base64');
 
           const promptText = `
-You are an expert voice dubbing translator and dialogue synchronizer.
-Listen carefully to the English audio and:
-1. Transcribe the entire spoken English dialogue from start to finish.
-2. Translate the speech into natural, colloquial ${targetLanguage === 'gu' ? 'Gujarati (in Gujarati script)' : 'Hindi (in Devanagari script)'}. Ensure the translation flows naturally and captures the mood of the dialogue.
-3. Detect whether the primary speaker is Male or Female.
+You are an expert dialogue synchronizer and dubbing director.
+Listen carefully to the audio and extract each spoken dialogue line with its exact start and end timestamps.
+Translate each line into natural colloquial ${targetLanguage === 'gu' ? 'Gujarati (in Gujarati script)' : 'Hindi (in Devanagari script)'}.
+Also detect if the primary speaker is male or female.
 Respond strictly in valid JSON format:
 {
   "detectedGender": "male" or "female",
-  "text": "full translated speech in target script",
   "segments": [
-    { "start": 0.0, "end": 4.5, "translated": "..." }
+    { "start": 20.2, "end": 24.5, "text": "English line", "translated": "Translated line" }
   ]
 }
 `;
 
-          // Query ModelService.ListModels on v1beta and v1 to find exact models supported by this API key
           let candidateEndpoints = [];
-
           for (const ver of ['v1beta', 'v1']) {
             try {
               const listRes = await fetch(`https://generativelanguage.googleapis.com/${ver}/models?key=${effectiveApiKey}`);
               const listData = await listRes.json();
               if (listData.models && Array.isArray(listData.models)) {
                 const supported = listData.models.filter((m) => {
-                  if (!Array.isArray(m.supportedGenerationMethods) || !m.supportedGenerationMethods.includes('generateContent')) {
-                    return false;
-                  }
+                  if (!Array.isArray(m.supportedGenerationMethods) || !m.supportedGenerationMethods.includes('generateContent')) return false;
                   const name = m.name.toLowerCase();
-                  if (name.includes('image') || name.includes('tts') || name.includes('embed') || name.includes('veo') || name.includes('imagen')) {
-                    return false;
-                  }
+                  if (name.includes('image') || name.includes('tts') || name.includes('embed') || name.includes('veo') || name.includes('imagen')) return false;
                   return true;
                 });
-
-                // Prioritize proven audio-capable flash endpoints (flash-lite-latest, 3-flash, 3.1-flash, 2.0-flash)
                 supported.sort((a, b) => {
                   const score = (item) => {
                     const n = item.name.toLowerCase();
                     if (n.includes('flash-lite-latest')) return 10;
                     if (n.includes('3-flash')) return 9;
                     if (n.includes('3.1-flash-lite')) return 8;
-                    if (n.includes('3.5-flash-lite')) return 7;
                     if (n.includes('2.0-flash')) return 6;
-                    if (n.includes('1.5-flash')) return 5;
-                    if (n.includes('flash')) return 4;
                     return 1;
                   };
                   return score(b) - score(a);
                 });
-
                 for (const m of supported) {
                   const mName = m.name.replace(/^models\//, '');
                   candidateEndpoints.push({
@@ -498,24 +546,18 @@ Respond strictly in valid JSON format:
                   });
                 }
               }
-            } catch (listErr) {
-              // Continue
-            }
+            } catch (e) {}
           }
 
-          // If ListModels did not return entries, try candidate models directly
           if (candidateEndpoints.length === 0) {
             candidateEndpoints = [
               { url: `https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-lite-latest:generateContent?key=${effectiveApiKey}`, name: 'gemini-flash-lite-latest (v1beta)' },
-              { url: `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${effectiveApiKey}`, name: 'gemini-2.0-flash (v1beta)' },
-              { url: `https://generativelanguage.googleapis.com/v1/models/gemini-2.0-flash:generateContent?key=${effectiveApiKey}`, name: 'gemini-2.0-flash (v1)' },
-              { url: `https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash:generateContent?key=${effectiveApiKey}`, name: 'gemini-1.5-flash (v1)' }
+              { url: `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${effectiveApiKey}`, name: 'gemini-2.0-flash (v1beta)' }
             ];
           }
 
           for (const endpoint of candidateEndpoints) {
             try {
-              console.log(`[Gemini] Attempting speech recognition with ${endpoint.name}...`);
               const geminiRes = await fetch(endpoint.url, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -531,10 +573,7 @@ Respond strictly in valid JSON format:
               });
 
               const geminiData = await geminiRes.json();
-              if (geminiData.error) {
-                console.warn(`[Gemini] ${endpoint.name} returned error:`, geminiData.error.message);
-                continue; // Try next candidate
-              }
+              if (geminiData.error) continue;
 
               const rawJsonText = geminiData.candidates?.[0]?.content?.parts?.[0]?.text;
               if (rawJsonText) {
@@ -544,23 +583,20 @@ Respond strictly in valid JSON format:
                 } catch (pe) {
                   const match = rawJsonText.match(/\{[\s\S]*\}/);
                   if (match) parsed = JSON.parse(match[0]);
-                  else parsed = { text: rawJsonText };
                 }
 
-                if (parsed.text && parsed.text.trim()) {
-                  console.log(`[Gemini] Speech recognition successful with ${endpoint.name}! Output chars: ${parsed.text.length}`);
-                  translatedSegments.push({ translated: parsed.text.trim() });
-                }
-                if (parsed.detectedGender && currentGender === 'auto') {
-                  currentGender = parsed.detectedGender.toLowerCase();
-                }
-                if (translatedSegments.length > 0) {
-                  onProgress({
-                    percent: '55%',
-                    status: 'processing',
-                    message: `Stage 2/5: Speech recognized and translated successfully (${parsed.text.length} chars)!`
-                  });
-                  break; // Finished successfully!
+                if (parsed?.segments && Array.isArray(parsed.segments) && parsed.segments.length > 0) {
+                  dialogueCues = parsed.segments.map((s) => ({
+                    startSec: Number(s.start || 0),
+                    endSec: Number(s.end || (Number(s.start || 0) + 3.0)),
+                    text: s.text || '',
+                    translated: s.translated || ''
+                  }));
+                  if (parsed.detectedGender && currentGender === 'auto') {
+                    currentGender = parsed.detectedGender.toLowerCase();
+                  }
+                  console.log(`[Gemini] Successfully retrieved ${dialogueCues.length} timestamped cues!`);
+                  break;
                 }
               }
             } catch (callErr) {
@@ -569,115 +605,228 @@ Respond strictly in valid JSON format:
           }
         }
       } catch (geminiErr) {
-        console.warn('Gemini audio translation fallback triggered:', geminiErr.message);
+        console.warn('[Dubber] Gemini audio speech recognition failed:', geminiErr.message);
       }
     }
 
-    // Fallback 1: If transcript text was explicitly provided in options
-    if (translatedSegments.length === 0 && transcriptText && transcriptText.trim()) {
-      onProgress({
-        percent: '50%',
-        status: 'processing',
-        message: `Stage 2/5: Translating provided dialogue transcript to ${targetLanguage === 'gu' ? 'Gujarati' : 'Hindi'}...`
-      });
-      const translated = await translateTextFree(transcriptText.trim(), targetLanguage);
-      translatedSegments.push({ translated });
-    }
-
-    // Fallback 2: Auto-detect matching English subtitles from downloads/subtitles/
-    if (translatedSegments.length === 0) {
-      const matchingSub = findMatchingSubtitleFile(resolvedInput);
-      if (matchingSub && fs.existsSync(matchingSub)) {
-        try {
-          const srtRaw = fs.readFileSync(matchingSub, 'utf8');
-          const cleanDialogue = extractTextFromSrt(srtRaw);
-          if (cleanDialogue && cleanDialogue.length > 10) {
-            onProgress({
-              percent: '50%',
-              status: 'processing',
-              message: `Stage 2/5: Found matching subtitle (${path.basename(matchingSub)}), translating dialogue...`
-            });
-            console.log(`[Dubber] Using auto-detected subtitle ${path.basename(matchingSub)} (${cleanDialogue.length} chars)`);
-            const translated = await translateTextFree(cleanDialogue, targetLanguage);
-            translatedSegments.push({ translated });
-          }
-        } catch (subErr) {
-          console.warn('[Dubber] Subtitle auto-detect read error:', subErr.message);
-        }
+    // Fallback: If transcript text was provided without timestamps, split into sentences
+    if (dialogueCues.length === 0 && transcriptText && transcriptText.trim()) {
+      const sentences = transcriptText.trim().split(/(?<=[.?!])\s+/).filter(Boolean);
+      const estStart = (startOffset !== undefined && !isNaN(Number(startOffset))) ? Number(startOffset) : 5.0;
+      let pos = estStart;
+      for (const sent of sentences) {
+        const dur = Math.max(2.5, sent.length * 0.08);
+        dialogueCues.push({
+          startSec: pos,
+          endSec: pos + dur,
+          text: sent
+        });
+        pos += dur + 1.2;
       }
     }
 
-    // If still no translated segments, do NOT synthesize a fake 9-second placeholder!
-    if (translatedSegments.length === 0) {
+    if (dialogueCues.length === 0) {
       const errorMsg = effectiveApiKey
-        ? 'Gemini audio speech recognition could not find a supported model or detect dialogue. You can paste the dialogue or subtitle text in the "Optional Dialogue Transcript" section to dub without API limits.'
-        : 'A free Gemini API key is required to listen to and transcribe raw audio files. Please click "Add Free API Key" at the top of the Dubbing & TTS page, or provide the dialogue transcript/subtitles.';
+        ? 'Could not automatically detect dialogue timestamps in the audio file. Please download the matching English subtitles (.srt) or paste the dialogue in the transcript box.'
+        : 'Exact dialogue timing requires subtitles or a free Gemini API key to listen to the audio track. Please click "Add Free API Key" at the top of the Dubbing & TTS page, or paste the subtitles/transcript.';
       return onError(new Error(errorMsg));
     }
 
     if (abortController.aborted) return;
 
     // -------------------------------------------------------------
-    // STAGE 3: Neural Voice Synthesis in Target Language
+    // STAGE 3: Batch Translation to Target Language (Hindi/Gujarati)
+    // -------------------------------------------------------------
+    onProgress({
+      percent: '45%',
+      status: 'processing',
+      message: `Stage 3/5: Translating ${dialogueCues.length} dialogue lines to ${targetLanguage === 'gu' ? 'Gujarati' : 'Hindi'}...`
+    });
+
+    const cuesNeedingTranslation = dialogueCues.filter((c) => !c.translated || !c.translated.trim());
+    if (cuesNeedingTranslation.length > 0) {
+      const combinedLines = dialogueCues.map((c) => c.text).join('\n###\n');
+      try {
+        const translatedCombined = await translateTextFree(combinedLines, targetLanguage);
+        const translatedParts = translatedCombined.split(/###|\n###\n/).map((p) => p.trim()).filter(Boolean);
+
+        if (translatedParts.length === dialogueCues.length) {
+          for (let i = 0; i < dialogueCues.length; i++) {
+            dialogueCues[i].translated = translatedParts[i];
+          }
+        } else {
+          // If batch delimiter splitting had mismatch, translate one-by-one
+          for (let i = 0; i < dialogueCues.length; i++) {
+            dialogueCues[i].translated = await translateTextFree(dialogueCues[i].text, targetLanguage);
+          }
+        }
+      } catch (transErr) {
+        console.warn('[Dubber] Batch translation failed, attempting individual translation:', transErr.message);
+        for (let i = 0; i < dialogueCues.length; i++) {
+          try {
+            dialogueCues[i].translated = await translateTextFree(dialogueCues[i].text, targetLanguage);
+          } catch (e) {
+            dialogueCues[i].translated = dialogueCues[i].text;
+          }
+        }
+      }
+    }
+
+    if (abortController.aborted) return;
+
+    // -------------------------------------------------------------
+    // STAGE 4: Time-Aligned Voice Synthesis with Edge TTS
     // -------------------------------------------------------------
     const chosenGender = (currentGender === 'female') ? 'female' : 'male';
     const langKey = targetLanguage === 'gu' ? 'gu' : 'hi';
     const voiceId = VOICE_ROSTER[langKey][chosenGender].id;
 
     onProgress({
-      percent: '65%',
+      percent: '60%',
       status: 'processing',
-      message: `Stage 3/5: Synthesizing ${chosenGender} ${targetLanguage === 'gu' ? 'Gujarati' : 'Hindi'} voice (${VOICE_ROSTER[langKey][chosenGender].name})...`
+      message: `Stage 4/5: Synthesizing ${chosenGender} ${VOICE_ROSTER[langKey][chosenGender].name} voice aligned to scene timing...`
     });
 
-    const fullTranslatedText = translatedSegments.map((s) => s.translated).join(' ');
-    const ttsInstance = await synthesizeSpeechWithRetry(fullTranslatedText, voiceId, { rate: '+0%', pitch: '+0Hz' });
-    await ttsInstance.toFile(tempDubbedVoicePath);
+    const tempSegFiles = [];
+    const activeIntervals = [];
+
+    for (let i = 0; i < dialogueCues.length; i++) {
+      if (abortController.aborted) return;
+      const cue = dialogueCues[i];
+      const nextCue = dialogueCues[i + 1];
+      const slotDuration = Math.max(1.0, cue.endSec - cue.startSec);
+      const maxAvailableSlot = nextCue
+        ? Math.max(slotDuration, nextCue.startSec - cue.startSec - 0.2)
+        : slotDuration + 3.0;
+
+      // Dynamic pacing: if Hindi phrasing is longer than available slot, adjust speech rate
+      let speedRate = '+0%';
+      const estDuration = (cue.translated || '').length * 0.085;
+      if (estDuration > maxAvailableSlot * 1.1) {
+        const speedUp = Math.min(38, Math.round(((estDuration / maxAvailableSlot) - 1.0) * 100));
+        speedRate = `+${Math.max(8, speedUp)}%`;
+      }
+
+      const tts = await synthesizeSpeechWithRetry(cue.translated || cue.text, voiceId, { rate: speedRate, pitch: '+0Hz' });
+      const segMp3 = path.join(tempDir, `temp_${jobId}_seg_${i}.mp3`);
+      const segWav = path.join(tempDir, `temp_${jobId}_seg_${i}.wav`);
+      abortController.tempFiles.push(segMp3, segWav);
+
+      await tts.toFile(segMp3);
+
+      // Convert each segment to standard 44.1kHz stereo WAV
+      spawnSync(ffmpegPath, ['-i', segMp3, '-ar', '44100', '-ac', '2', '-y', segWav], { windowsHide: true });
+
+      // Measure exact generated audio duration
+      const prWav = spawnSync(ffmpegPath, ['-i', segWav], { encoding: 'utf8', windowsHide: true });
+      const mWav = (prWav.stderr || '').match(/Duration: (\d{2}):(\d{2}):(\d{2})\.(\d{2})/);
+      const actualDur = mWav
+        ? parseInt(mWav[1]) * 3600 + parseInt(mWav[2]) * 60 + parseInt(mWav[3]) + parseInt(mWav[4]) / 100
+        : slotDuration;
+
+      tempSegFiles.push({ segWav, startSec: cue.startSec, dur: actualDur });
+      activeIntervals.push({ start: cue.startSec, end: cue.startSec + actualDur });
+
+      if (i % 3 === 0 || i === dialogueCues.length - 1) {
+        onProgress({
+          percent: `${60 + Math.round((i / dialogueCues.length) * 20)}%`,
+          status: 'processing',
+          message: `Stage 4/5: Synthesized dialogue segment ${i + 1}/${dialogueCues.length} (${cue.startSec.toFixed(1)}s)...`
+        });
+      }
+    }
 
     if (abortController.aborted) return;
 
     // -------------------------------------------------------------
-    // STAGE 4 & 5: Audio Mixing with Background Music (Smart Ducking)
+    // STAGE 5: Concatenating Full Timed Voice Track & Studio Mix
     // -------------------------------------------------------------
     onProgress({
-      percent: '85%',
+      percent: '82%',
       status: 'processing',
-      message: hasBackgroundTrack
-        ? 'Stage 4/5: Mixing translated voice with background music & audio ducking...'
-        : 'Stage 4/5: Finalizing translated audio encoding...'
+      message: 'Stage 5/5: Building timeline and mixing with 100% preserved background music & sound effects...'
     });
 
-    const ffmpegPath = getFfmpegPath();
-    const ffmpegArgs = [];
+    // Build timeline parts: gaps of digital silence between dialogue segments
+    const concatInputs = [];
+    let currentPos = 0;
 
-    if (hasBackgroundTrack && fs.existsSync(tempBgPath)) {
-      // Audio ducking: lower background music volume to 30% and mix with new translated voice
-      ffmpegArgs.push(
-        '-i', tempDubbedVoicePath,
-        '-i', tempBgPath,
-        '-filter_complex', '[1:a]volume=0.30[bg];[0:a][bg]amix=inputs=2:duration=first:dropout_transition=2[out]',
-        '-map', '[out]',
-        '-c:a', 'libmp3lame',
-        '-b:a', '192k',
-        '-y',
-        targetFilePath
-      );
-    } else {
-      // Pure speech output
-      ffmpegArgs.push(
-        '-i', tempDubbedVoicePath,
-        '-c:a', 'libmp3lame',
-        '-b:a', '192k',
-        '-y',
-        targetFilePath
-      );
+    for (let i = 0; i < tempSegFiles.length; i++) {
+      const s = tempSegFiles[i];
+      const gap = s.startSec - currentPos;
+      if (gap > 0.02) {
+        const gapFile = path.join(tempDir, `temp_${jobId}_gap_${i}.wav`);
+        abortController.tempFiles.push(gapFile);
+        spawnSync(ffmpegPath, ['-f', 'lavfi', '-i', 'anullsrc=r=44100:cl=stereo', '-t', gap.toFixed(3), '-y', gapFile], { windowsHide: true });
+        concatInputs.push(gapFile);
+        currentPos += gap;
+      }
+      concatInputs.push(s.segWav);
+      currentPos += s.dur;
     }
 
-    const ffmpegProc = spawn(ffmpegPath, ffmpegArgs, { windowsHide: true });
-    abortController.processes.push(ffmpegProc);
+    const effectiveTotalDur = Math.max(totalDurationSec, currentPos);
+    if (currentPos < effectiveTotalDur) {
+      const finalGap = effectiveTotalDur - currentPos;
+      const finalGapFile = path.join(tempDir, `temp_${jobId}_gap_final.wav`);
+      abortController.tempFiles.push(finalGapFile);
+      spawnSync(ffmpegPath, ['-f', 'lavfi', '-i', 'anullsrc=r=44100:cl=stereo', '-t', finalGap.toFixed(3), '-y', finalGapFile], { windowsHide: true });
+      concatInputs.push(finalGapFile);
+      currentPos += finalGap;
+    }
 
-    ffmpegProc.on('close', (code) => {
-      // Clean up temporary files
+    const concatListFile = path.join(tempDir, `temp_${jobId}_concat_list.txt`);
+    abortController.tempFiles.push(concatListFile);
+    fs.writeFileSync(concatListFile, concatInputs.map((f) => `file '${f.replace(/\\/g, '/')}'`).join('\n'));
+
+    const fullTimedVoiceWav = path.join(tempDir, `temp_${jobId}_full_voice.wav`);
+    abortController.tempFiles.push(fullTimedVoiceWav);
+    spawnSync(ffmpegPath, ['-f', 'concat', '-safe', '0', '-i', concatListFile, '-c', 'copy', '-y', fullTimedVoiceWav], { windowsHide: true });
+
+    // Background track source:
+    // If Demucs separated no_vocals.wav exists, use it. Otherwise, use original audio with dynamic speech ducking!
+    const bgSource = (demucsBgPath && fs.existsSync(demucsBgPath)) ? demucsBgPath : resolvedInput;
+    const userBgVol = Number(bgVolume) || 1.0;
+
+    let filterGraph;
+    if (demucsBgPath && fs.existsSync(demucsBgPath)) {
+      // Demucs background already has 0% vocals: full volume throughout!
+      filterGraph = `[0:a]volume=${(userBgVol).toFixed(2)}[bg];[1:a]volume=1.3[voice];[bg][voice]amix=inputs=2:duration=first:dropout_transition=0:weights=1 1,volume=2.0[out]`;
+    } else {
+      // Dynamic Ducking:
+      // Outside dialogue intervals (intro, pauses, fight scenes, climax): volume is 100% full untouched original!
+      // During active dialogue intervals: duck background to 0.26 * bgVolume so translated voice is loud and clear,
+      // and original English dialogue is suppressed while background instruments remain hearable!
+      const conds = activeIntervals.map((inv) => `between(t,${inv.start.toFixed(2)},${inv.end.toFixed(2)})`).join('+');
+      const duckLevel = (0.26 * Math.max(0.1, userBgVol)).toFixed(3);
+      const normalLevel = (1.0 * Math.max(0.1, userBgVol)).toFixed(3);
+      const duckExpr = `if(${conds},${duckLevel},${normalLevel})`;
+
+      filterGraph = `[0:a]volume=eval=frame:volume='${duckExpr}'[ducked_bg];[1:a]volume=1.3[voice];[ducked_bg][voice]amix=inputs=2:duration=first:dropout_transition=0:weights=1 1,volume=2.0[out]`;
+    }
+
+    const mixArgs = [
+      '-i', bgSource,
+      '-i', fullTimedVoiceWav,
+      '-filter_complex', filterGraph,
+      '-map', '[out]',
+      '-c:a', 'libmp3lame',
+      '-b:a', '192k',
+      '-y', targetFilePath
+    ];
+
+    const mixProc = spawn(ffmpegPath, mixArgs, { windowsHide: true });
+    abortController.processes.push(mixProc);
+
+    let ffmpegStderr = '';
+    if (mixProc.stderr) {
+      mixProc.stderr.on('data', (d) => {
+        ffmpegStderr += d.toString();
+      });
+    }
+
+    mixProc.on('close', (code) => {
+      // Cleanup temp files
       for (const f of abortController.tempFiles) {
         try { if (fs.existsSync(f)) fs.unlinkSync(f); } catch (e) {}
       }
@@ -685,6 +834,7 @@ Respond strictly in valid JSON format:
 
       if (code === 0 && fs.existsSync(targetFilePath)) {
         const stats = fs.statSync(targetFilePath);
+        const translatedSnippet = dialogueCues.map((c) => c.translated).slice(0, 3).join(' ') + '...';
         onComplete({
           jobId,
           fileName: targetFileName,
@@ -695,16 +845,18 @@ Respond strictly in valid JSON format:
           targetLanguage,
           voiceGender: chosenGender,
           voiceId,
-          hasBackgroundTrack,
-          translatedSnippet: fullTranslatedText.slice(0, 80) + '...',
+          hasBackgroundTrack: true,
+          cuesCount: dialogueCues.length,
+          translatedSnippet,
           status: 'completed'
         });
       } else {
-        onError(new Error(`Audio mixing failed with exit code ${code}`));
+        console.error('[Dubber] Audio mixing error:', ffmpegStderr.slice(-400));
+        onError(new Error(`Audio mixing failed: ${ffmpegStderr.slice(-250) || `exit code ${code}`}`));
       }
     });
 
-    ffmpegProc.on('error', (err) => {
+    mixProc.on('error', (err) => {
       for (const f of abortController.tempFiles) {
         try { if (fs.existsSync(f)) fs.unlinkSync(f); } catch (e) {}
       }

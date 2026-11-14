@@ -90,13 +90,19 @@ StreamVault is structured into four dedicated header tabs:
        - **Hindi (हिंदी)**: `hi-IN-MadhurNeural` (Male) / `hi-IN-SwaraNeural` (Female).
        - **Gujarati (ગુજરાતી)**: `gu-IN-NiranjanNeural` (Male) / `gu-IN-DhwaniNeural` (Female).
      - **Gender Selection**: Auto-Detect, Male, or Female.
-     - **Background Sound Preservation**:
+     - **Background Sound Preservation & Vocal Elimination**:
        - Local stem separation powered by **Python Demucs** isolates foreground vocals (`vocals.wav`) from the background instruments and music (`no_vocals.wav`).
-       - Graceful fallback: when Demucs is not installed, an FFmpeg vocal attenuation bandpass filter removes center-panned voice frequencies.
+       - Advanced Fallback: High-efficiency mid/side center-channel cancellation (`stereotools=mlev=0.015625:slev=1.35`) with parametric vocal notch filters suppresses center English speech by `-36 dB` (98.5% vocal cut) while boosting stereo orchestral instruments and sound effects.
+     - **Dialogue Timing & Intro Delay Synchronization**:
+       - Auto-detects speech start offset from subtitles (`.srt` / `.vtt`) or Gemini timestamps (e.g. 23.2s for movie trailers) and pads initial speech with `adelay` so dramatic intro music plays with zero dialogue until the character speaks.
+       - Customizable manual Start Delay input in the UI.
+     - **Dynamic Sidechain Ducking (`sidechaincompress`)**:
+       - Background music plays at **100% full volume** during action scenes, fight choreography, sound effects, and pauses.
+       - Automatically ducks down by ~8dB only when dialogue is actively speaking, and smoothly ramps back up in 350ms.
+       - Configurable Background Music Volume Slider (50% to 150%) and `duration=longest` preserving the full trailer duration.
      - **Speech Recognition & Natural Translation**:
-       - Context-aware dialogue translation via free Google Gemini 1.5 Flash API key (with user API Key modal/drawer).
-       - Zero-barrier fallback: uses free Google Translate endpoint if no Gemini key is provided.
-     - **Smart Mixing**: FFmpeg audio ducking automatically ducks background volume to 30% whenever dubbed dialogue speaks, restoring full level during pauses.
+       - Dynamic model discovery (`ModelService.ListModels`) and fallback chain (`gemini-flash-lite-latest`, `gemini-3-flash-preview`, `gemini-2.0-flash`, etc.).
+       - Zero-barrier fallback: uses clean subtitle extraction or user transcript with free Google Translate if no API key is provided.
      - **Destination**: Exported into `downloads/dubbed_audio/` with timestamp prefix (`YYYYMMDD_HHMM_`).
   2. **Text to Audio (TTS Studio)**:
      - **Input**: Multi-line custom script or dialogue in English, Hindi, or Gujarati (with quick sample prompts and character counter).

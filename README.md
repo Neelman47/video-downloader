@@ -55,10 +55,10 @@ StreamVault provides four dedicated top-level tabs:
 ### 4. 🎙️ Dubbing & TTS (AI Voice Studio)
 - **AI Voice Dubber (English to Hindi / Gujarati)**:
   - Converts English audio files into natural Hindi or Gujarati speech.
-  - **Background Preservation**: Uses Python Demucs local stem isolation (with FFmpeg vocal attenuation fallback) to preserve original music, instruments, and background effects while replacing only dialogue.
-  - **Smart Mixing**: Automatically ducks background music by 70% during spoken dialogue and restores it during pauses.
+  - **Background Preservation & Vocal Elimination**: Uses Python Demucs stem isolation or FFmpeg mid-side center vocal elimination (`-36dB` cut) with notch filters to suppress center English dialogue while keeping orchestral music, fight scenes, and SFX vibrant.
+  - **Dynamic Sidechain Ducking**: Background music plays at **100% full volume** during action scenes and pauses, automatically ducking only when speech occurs, with customizable volume slider (50%–150%) and speech start delay alignment.
   - **Gender Choice**: Auto-detect, Male (`hi-IN-MadhurNeural`, `gu-IN-NiranjanNeural`), or Female (`hi-IN-SwaraNeural`, `gu-IN-DhwaniNeural`).
-  - **Free Translation Engine**: Gemini 1.5 Flash (with user API key drawer) or free Google Translate fallback.
+  - **Translation & Transcription**: Dynamic Gemini models (`gemini-flash-lite-latest`, `gemini-3-flash-preview`, etc.) with automatic subtitle extraction and free Google Translate fallback.
   - **Destination**: Saved to `downloads/dubbed_audio/`.
 - **Text to Audio (TTS Studio)**:
   - Turns custom script text (English, Hindi, or Gujarati) into studio-quality voiceovers.

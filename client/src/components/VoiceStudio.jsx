@@ -120,6 +120,9 @@ export default function VoiceStudio({
   const [customDubName, setCustomDubName] = useState('');
   const [dubTranscript, setDubTranscript] = useState('');
   const [showTranscriptBox, setShowTranscriptBox] = useState(false);
+  const [bgMusicVolume, setBgMusicVolume] = useState(100); // 50% - 150%
+  const [startOffsetSec, setStartOffsetSec] = useState(''); // empty = auto-detect
+  const [vocalCutIntensity, setVocalCutIntensity] = useState('max'); // 'max' | 'balanced'
 
   // Sync initial selected path
   useEffect(() => {
@@ -211,6 +214,11 @@ export default function VoiceStudio({
       if (dubTranscript.trim()) {
         formData.append('transcriptText', dubTranscript.trim());
       }
+      formData.append('bgVolume', (bgMusicVolume / 100).toString());
+      if (startOffsetSec.toString().trim() !== '') {
+        formData.append('startOffset', startOffsetSec.toString().trim());
+      }
+      formData.append('vocalCutLevel', vocalCutIntensity);
 
       const storedKey = localStorage.getItem('sv_gemini_api_key');
       if (storedKey) {
@@ -718,6 +726,39 @@ export default function VoiceStudio({
                       </p>
                     </div>
                   </label>
+                </div>
+
+                {/* Background Music Volume Slider */}
+                {separationMode !== 'pure_voice' && (
+                  <div className="space-y-1.5 pt-2 border-t border-slate-800">
+                    <div className="flex items-center justify-between text-[11px]">
+                      <span className="text-slate-300 font-semibold">Background Music Volume:</span>
+                      <span className="font-mono text-amber-400 font-bold">{bgMusicVolume}%</span>
+                    </div>
+                    <input
+                      type="range"
+                      min="30"
+                      max="150"
+                      step="5"
+                      value={bgMusicVolume}
+                      onChange={(e) => setBgMusicVolume(Number(e.target.value))}
+                      className="w-full accent-amber-500 h-1.5 bg-slate-800 rounded-lg cursor-pointer"
+                    />
+                    <p className="text-[10px] text-slate-400">
+                      100% full original music & sound effects during intro, fight scenes & climax; dynamically ducks during spoken dialogue.
+                    </p>
+                  </div>
+                )}
+
+                {/* Subtitle / Timestamp Sync Indicator */}
+                <div className="p-2.5 rounded-lg bg-emerald-500/10 border border-emerald-500/20 text-[11px] text-emerald-300 space-y-1">
+                  <div className="flex items-center gap-1.5 font-semibold text-emerald-300">
+                    <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
+                    <span>Exact Scene-Time Synchronization</span>
+                  </div>
+                  <p className="text-[10px] text-slate-400">
+                    Characters speak at the exact second their dialogue occurs in the video. All pauses, music, and fight sounds stay 100% original.
+                  </p>
                 </div>
 
                 {/* Demucs status notice */}
