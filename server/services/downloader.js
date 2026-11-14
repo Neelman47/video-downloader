@@ -449,7 +449,151 @@ export function resolveAudioFormat(formats, { audioTrackId, audioLanguage, audio
 }
 
 /**
- * Execute download based on selection (supports trimming, subfolders, and timestamp prefix)
+ * Clean up all temporary part and stream files associated with a jobId
+ */
+export function cleanupJobFiles(jobId) {
+  try {
+    const dDir = getDownloadsDir();
+    if (!fs.existsSync(dDir)) return;
+    const files = fs.readdirSync(dDir);
+    for (const f of files) {
+      if (f.includes(jobId)) {
+        try { fs.unlinkSync(path.join(dDir, f)); } catch (e) {}
+      }
+    }
+  } catch (e) {}
+}
+
+/**
+ * Optimized Stream Downloader:
+ * - Uses parallel multi-part Range downloads if fastDownload is enabled, format.url is present, and file size >= 10MB
+ * - Otherwise falls back to highWaterMark/chunkSize tuned stream
+ */
+async function downloadFormatStream({
+  ytdlInstance,
+  url,
+  format,
+  destinationPath,
+  abortController,
+  fastDownload = true,
+  onChunkProgress
+}) {
+  const total = format.contentLength ? parseInt(format.contentLength) : 0;
+  const isChunkEligible = fastDownload && format.url && total >= 10 * 1024 * 1024; // >= 10 MB
+
+  if (isChunkEligible) {
+    const numChunks = Math.min(4, Math.max(2, Math.floor(total / (10 * 1024 * 1024))));
+    const chunkSize = Math.ceil(total / numChunks);
+    const chunks = [];
+    const tempPartFiles = [];
+
+    for (let i = 0; i < numChunks; i++) {
+      const start = i * chunkSize;
+      const end = Math.min(total - 1, (i + 1) * chunkSize - 1);
+      const partPath = path.join(path.dirname(destinationPath), `temp_part_${path.basename(destinationPath)}_${i}.tmp`);
+      tempPartFiles.push(partPath);
+      chunks.push({ index: i, start, end, partPath, downloaded: 0, total: end - start + 1 });
+    }
+
+    try {
+      await Promise.all(chunks.map(async (c) => {
+        const fetchCtrl = new AbortController();
+        if (abortController.fetchControllers) {
+          abortController.fetchControllers.push(fetchCtrl);
+        }
+
+        const res = await fetch(format.url, {
+          signal: fetchCtrl.signal,
+          headers: {
+            'Range': `bytes=${c.start}-${c.end}`,
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+          }
+        });
+
+        if (!res.ok && res.status !== 206) {
+          throw new Error(`Chunk ${c.index} range request failed with status ${res.status}`);
+        }
+
+        const writeStream = fs.createWriteStream(c.partPath);
+        for await (const chunk of res.body) {
+          if (abortController.aborted) {
+            writeStream.destroy();
+            throw new Error('Download aborted');
+          }
+          writeStream.write(Buffer.from(chunk));
+          c.downloaded += chunk.length;
+          const currentTotalDownloaded = chunks.reduce((acc, curr) => acc + curr.downloaded, 0);
+          if (onChunkProgress) {
+            onChunkProgress(currentTotalDownloaded, total);
+          }
+        }
+        await new Promise((resFinish, rejFinish) => {
+          writeStream.end(() => resFinish());
+          writeStream.on('error', rejFinish);
+        });
+      }));
+
+      if (abortController.aborted) throw new Error('Download aborted');
+
+      // Stitch chunks sequentially into destinationPath
+      const finalWriteStream = fs.createWriteStream(destinationPath);
+      for (const c of chunks) {
+        if (fs.existsSync(c.partPath)) {
+          await new Promise((resPipe, rejPipe) => {
+            const rs = fs.createReadStream(c.partPath);
+            rs.pipe(finalWriteStream, { end: false });
+            rs.on('end', () => {
+              try { fs.unlinkSync(c.partPath); } catch (e) {}
+              resPipe();
+            });
+            rs.on('error', rejPipe);
+          });
+        }
+      }
+      await new Promise(r => finalWriteStream.end(r));
+      return total;
+    } catch (err) {
+      for (const p of tempPartFiles) {
+        try { if (fs.existsSync(p)) fs.unlinkSync(p); } catch (e) {}
+      }
+      if (abortController.aborted) throw err;
+      console.warn('Multi-chunk range download failed, falling back to standard stream:', err.message);
+    }
+  }
+
+  // Fallback / Standard stream with highWaterMark buffer optimization
+  const stream = await ytdlInstance.download(url, {
+    format,
+    highWaterMark: 1024 * 1024 * 10,
+    chunkSize: 1024 * 1024 * 10
+  });
+  abortController.streams.push(stream);
+
+  const writeStream = fs.createWriteStream(destinationPath);
+  let downloaded = 0;
+
+  return new Promise((resolve, reject) => {
+    stream.on('data', chunk => {
+      if (abortController.aborted) return;
+      downloaded += chunk.length;
+      writeStream.write(chunk);
+      if (onChunkProgress) {
+        onChunkProgress(downloaded, total);
+      }
+    });
+    stream.on('end', () => {
+      writeStream.end();
+      resolve(downloaded);
+    });
+    stream.on('error', err => {
+      writeStream.end();
+      reject(err);
+    });
+  });
+}
+
+/**
+ * Execute download based on selection (supports trimming, subfolders, fast multi-threaded chunks, and timestamp prefix)
  */
 export async function executeDownload(jobId, options, callbacks) {
   const {
@@ -462,7 +606,8 @@ export async function executeDownload(jobId, options, callbacks) {
     container = 'mp4',
     trimStart,
     trimEnd,
-    subfolderOverride
+    subfolderOverride,
+    fastDownload = true
   } = options;
   const { onProgress, onComplete, onError } = callbacks;
 
@@ -490,7 +635,7 @@ export async function executeDownload(jobId, options, callbacks) {
     const safeTitle = sanitizeFileName(info.videoDetails?.title || 'video');
     const videoId = info.videoDetails?.videoId || info.videoDetails?.id || (url.match(/(?:v=|youtu\.be\/)([\w-]{11})/)?.[1]) || 'video';
 
-    // Optional clipping label in filename (replace colons with hyphens for safe filesystem naming)
+    // Optional clipping label in filename
     const safeTrimStart = (trimStart || '00-00').replace(/:/g, '-');
     const safeTrimEnd = (trimEnd || formatDuration(info.videoDetails.lengthSeconds)).replace(/:/g, '-');
     const clipTag = isTrimmed ? ` [Clip ${safeTrimStart} to ${safeTrimEnd}]` : '';
@@ -501,6 +646,7 @@ export async function executeDownload(jobId, options, callbacks) {
     const abortController = {
       aborted: false,
       streams: [],
+      fetchControllers: [],
       ffmpegProc: null
     };
     activeJobs.set(jobId, abortController);
@@ -517,123 +663,116 @@ export async function executeDownload(jobId, options, callbacks) {
       targetFileName = `${timestampPrefix}${safeTitle} [Audio${langTag}]${clipTag} [${videoId}].${ext}`;
       targetFilePath = path.join(destinationDir, targetFileName);
 
-      // If trimmed or MP3 container requested with different codec, use ffmpeg
       const needsFfmpegAudio = isTrimmed || (ext === 'mp3' && audioFormat.container !== 'mp3');
       const streamDownloadPath = needsFfmpegAudio ? path.join(getDownloadsDir(), `temp_${jobId}_rawaudio.${audioFormat.container || 'm4a'}`) : targetFilePath;
 
-      const stream = await ytdl.download(url, { format: audioFormat });
-      abortController.streams.push(stream);
-
-      const writeStream = fs.createWriteStream(streamDownloadPath);
-      let downloaded = 0;
       const total = audioFormat.contentLength ? parseInt(audioFormat.contentLength) : 0;
       let startTime = Date.now();
       let lastReport = Date.now();
 
-      stream.on('data', chunk => {
-        if (abortController.aborted) return;
-        downloaded += chunk.length;
-        writeStream.write(chunk);
+      await downloadFormatStream({
+        ytdlInstance: ytdl,
+        url,
+        format: audioFormat,
+        destinationPath: streamDownloadPath,
+        abortController,
+        fastDownload,
+        onChunkProgress: (downloaded, totalBytes) => {
+          const now = Date.now();
+          if (now - lastReport >= 250) {
+            const elapsedSec = (now - startTime) / 1000;
+            const speedBytesPerSec = downloaded / (elapsedSec || 1);
+            const percent = totalBytes ? Math.min(needsFfmpegAudio ? 80 : 99, Math.round((downloaded / totalBytes) * (needsFfmpegAudio ? 80 : 100))) : 50;
+            const etaSec = totalBytes ? Math.round((totalBytes - downloaded) / (speedBytesPerSec || 1)) : 0;
 
-        const now = Date.now();
-        if (now - lastReport >= 300) {
-          const elapsedSec = (now - startTime) / 1000;
-          const speedBytesPerSec = downloaded / (elapsedSec || 1);
-          const percent = total ? Math.min(needsFfmpegAudio ? 80 : 99, Math.round((downloaded / total) * (needsFfmpegAudio ? 80 : 100))) : 50;
-          const etaSec = total ? Math.round((total - downloaded) / (speedBytesPerSec || 1)) : 0;
-
-          onProgress({
-            percent: `${percent}%`,
-            speed: `${formatBytes(speedBytesPerSec)}/s`,
-            eta: total ? `${etaSec}s` : '--',
-            totalSize: total ? formatBytes(total) : formatBytes(downloaded),
-            status: 'downloading',
-            message: `Downloading audio (${langLabel || 'Original'})...`
-          });
-          lastReport = now;
+            onProgress({
+              percent: `${percent}%`,
+              speed: `${formatBytes(speedBytesPerSec)}/s`,
+              eta: totalBytes ? `${etaSec}s` : '--',
+              totalSize: totalBytes ? formatBytes(totalBytes) : formatBytes(downloaded),
+              status: 'downloading',
+              fastDownload,
+              message: fastDownload
+                ? `⚡ Turbo downloading audio (${langLabel || 'Original'})...`
+                : `Downloading audio (${langLabel || 'Original'})...`
+            });
+            lastReport = now;
+          }
         }
       });
 
-      stream.on('end', () => {
-        writeStream.end();
-        if (abortController.aborted) return;
+      if (abortController.aborted) return;
 
-        if (needsFfmpegAudio) {
-          onProgress({
-            percent: '85%',
-            speed: '--',
-            eta: '--',
-            totalSize: formatBytes(downloaded),
-            status: 'merging',
-            message: isTrimmed ? 'Trimming audio clip...' : 'Converting audio to MP3...'
-          });
+      if (needsFfmpegAudio) {
+        onProgress({
+          percent: '85%',
+          speed: '--',
+          eta: '--',
+          totalSize: formatBytes(total),
+          status: 'merging',
+          message: isTrimmed ? 'Trimming audio clip...' : 'Converting audio to MP3...'
+        });
 
-          const ffmpegArgs = [];
-          if (trimStartSec > 0) {
-            ffmpegArgs.push('-ss', secondsToFfmpegTime(trimStartSec));
-          }
-          if (trimEndSec && trimEndSec > trimStartSec) {
-            ffmpegArgs.push('-t', String(trimEndSec - trimStartSec));
-          }
-          ffmpegArgs.push('-i', streamDownloadPath);
-          if (ext === 'mp3') {
-            ffmpegArgs.push('-c:a', 'libmp3lame', '-b:a', '192k');
-          } else {
-            ffmpegArgs.push('-c:a', 'copy');
-          }
-          ffmpegArgs.push('-y', targetFilePath);
-
-          const ffmpegProc = spawn(getFfmpegPath(), ffmpegArgs, { windowsHide: true });
-          abortController.ffmpegProc = ffmpegProc;
-
-          ffmpegProc.on('close', code => {
-            try { if (fs.existsSync(streamDownloadPath)) fs.unlinkSync(streamDownloadPath); } catch (e) {}
-            activeJobs.delete(jobId);
-
-            if (code === 0 && fs.existsSync(targetFilePath)) {
-              const finalSize = fs.statSync(targetFilePath).size;
-              onComplete({
-                jobId,
-                fileName: targetFileName,
-                relativePath: `${subfolder}/${targetFileName}`,
-                filePath: targetFilePath,
-                fileSize: finalSize,
-                fileSizeFormatted: formatBytes(finalSize),
-                status: 'completed'
-              });
-            } else {
-              onError(new Error(`Audio processing failed with exit code ${code}`));
-            }
-          });
-
-          ffmpegProc.on('error', err => {
-            try { if (fs.existsSync(streamDownloadPath)) fs.unlinkSync(streamDownloadPath); } catch (e) {}
-            activeJobs.delete(jobId);
-            onError(err);
-          });
-
+        const ffmpegArgs = [];
+        if (trimStartSec > 0) {
+          ffmpegArgs.push('-ss', secondsToFfmpegTime(trimStartSec));
+        }
+        if (trimEndSec && trimEndSec > trimStartSec) {
+          ffmpegArgs.push('-t', String(trimEndSec - trimStartSec));
+        }
+        ffmpegArgs.push('-i', streamDownloadPath);
+        if (ext === 'mp3') {
+          ffmpegArgs.push('-c:a', 'libmp3lame', '-b:a', '192k');
         } else {
-          activeJobs.delete(jobId);
-          const finalSize = fs.existsSync(targetFilePath) ? fs.statSync(targetFilePath).size : downloaded;
-          onComplete({
-            jobId,
-            fileName: targetFileName,
-            relativePath: `${subfolder}/${targetFileName}`,
-            filePath: targetFilePath,
-            fileSize: finalSize,
-            fileSizeFormatted: formatBytes(finalSize),
-            status: 'completed'
-          });
+          ffmpegArgs.push('-c:a', 'copy');
         }
-      });
+        ffmpegArgs.push('-y', targetFilePath);
 
-      stream.on('error', err => {
-        writeStream.end();
-        try { if (fs.existsSync(streamDownloadPath)) fs.unlinkSync(streamDownloadPath); } catch (e) {}
+        const ffmpegProc = spawn(getFfmpegPath(), ffmpegArgs, { windowsHide: true });
+        abortController.ffmpegProc = ffmpegProc;
+
+        ffmpegProc.on('close', code => {
+          try { if (fs.existsSync(streamDownloadPath)) fs.unlinkSync(streamDownloadPath); } catch (e) {}
+          cleanupJobFiles(jobId);
+          activeJobs.delete(jobId);
+
+          if (code === 0 && fs.existsSync(targetFilePath)) {
+            const finalSize = fs.statSync(targetFilePath).size;
+            onComplete({
+              jobId,
+              fileName: targetFileName,
+              relativePath: `${subfolder}/${targetFileName}`,
+              filePath: targetFilePath,
+              fileSize: finalSize,
+              fileSizeFormatted: formatBytes(finalSize),
+              status: 'completed'
+            });
+          } else {
+            onError(new Error(`Audio processing failed with exit code ${code}`));
+          }
+        });
+
+        ffmpegProc.on('error', err => {
+          try { if (fs.existsSync(streamDownloadPath)) fs.unlinkSync(streamDownloadPath); } catch (e) {}
+          cleanupJobFiles(jobId);
+          activeJobs.delete(jobId);
+          onError(err);
+        });
+
+      } else {
+        cleanupJobFiles(jobId);
         activeJobs.delete(jobId);
-        onError(err);
-      });
-
+        const finalSize = fs.existsSync(targetFilePath) ? fs.statSync(targetFilePath).size : total;
+        onComplete({
+          jobId,
+          fileName: targetFileName,
+          relativePath: `${subfolder}/${targetFileName}`,
+          filePath: targetFilePath,
+          fileSize: finalSize,
+          fileSizeFormatted: formatBytes(finalSize),
+          status: 'completed'
+        });
+      }
       return;
     }
 
@@ -651,113 +790,107 @@ export async function executeDownload(jobId, options, callbacks) {
 
       const streamDownloadPath = isTrimmed ? path.join(getDownloadsDir(), `temp_${jobId}_rawvideo.${ext}`) : targetFilePath;
 
-      const stream = await ytdl.download(url, { format: videoFormat });
-      abortController.streams.push(stream);
-
-      const writeStream = fs.createWriteStream(streamDownloadPath);
-      let downloaded = 0;
       const total = videoFormat.contentLength ? parseInt(videoFormat.contentLength) : 0;
       let startTime = Date.now();
       let lastReport = Date.now();
 
-      stream.on('data', chunk => {
-        if (abortController.aborted) return;
-        downloaded += chunk.length;
-        writeStream.write(chunk);
+      await downloadFormatStream({
+        ytdlInstance: ytdl,
+        url,
+        format: videoFormat,
+        destinationPath: streamDownloadPath,
+        abortController,
+        fastDownload,
+        onChunkProgress: (downloaded, totalBytes) => {
+          const now = Date.now();
+          if (now - lastReport >= 250) {
+            const elapsedSec = (now - startTime) / 1000;
+            const speedBytesPerSec = downloaded / (elapsedSec || 1);
+            const percent = totalBytes ? Math.min(isTrimmed ? 80 : 99, Math.round((downloaded / totalBytes) * (isTrimmed ? 80 : 100))) : 50;
+            const etaSec = totalBytes ? Math.round((totalBytes - downloaded) / (speedBytesPerSec || 1)) : 0;
 
-        const now = Date.now();
-        if (now - lastReport >= 300) {
-          const elapsedSec = (now - startTime) / 1000;
-          const speedBytesPerSec = downloaded / (elapsedSec || 1);
-          const percent = total ? Math.min(isTrimmed ? 80 : 99, Math.round((downloaded / total) * (isTrimmed ? 80 : 100))) : 50;
-          const etaSec = total ? Math.round((total - downloaded) / (speedBytesPerSec || 1)) : 0;
-
-          onProgress({
-            percent: `${percent}%`,
-            speed: `${formatBytes(speedBytesPerSec)}/s`,
-            eta: total ? `${etaSec}s` : '--',
-            totalSize: total ? formatBytes(total) : formatBytes(downloaded),
-            status: 'downloading',
-            message: 'Downloading video stream...'
-          });
-          lastReport = now;
+            onProgress({
+              percent: `${percent}%`,
+              speed: `${formatBytes(speedBytesPerSec)}/s`,
+              eta: totalBytes ? `${etaSec}s` : '--',
+              totalSize: totalBytes ? formatBytes(totalBytes) : formatBytes(downloaded),
+              status: 'downloading',
+              fastDownload,
+              message: fastDownload
+                ? `⚡ Turbo downloading video chunks (${videoFormat.qualityLabel || 'HD'})...`
+                : `Downloading video stream (${videoFormat.qualityLabel || 'HD'})...`
+            });
+            lastReport = now;
+          }
         }
       });
 
-      stream.on('end', () => {
-        writeStream.end();
-        if (abortController.aborted) return;
+      if (abortController.aborted) return;
 
-        if (isTrimmed) {
-          onProgress({
-            percent: '85%',
-            speed: '--',
-            eta: '--',
-            totalSize: formatBytes(downloaded),
-            status: 'merging',
-            message: 'Trimming video clip...'
-          });
+      if (isTrimmed) {
+        onProgress({
+          percent: '85%',
+          speed: '--',
+          eta: '--',
+          totalSize: formatBytes(total),
+          status: 'merging',
+          message: 'Trimming video clip...'
+        });
 
-          const ffmpegArgs = [];
-          if (trimStartSec > 0) {
-            ffmpegArgs.push('-ss', secondsToFfmpegTime(trimStartSec));
-          }
-          if (trimEndSec && trimEndSec > trimStartSec) {
-            ffmpegArgs.push('-t', String(trimEndSec - trimStartSec));
-          }
-          ffmpegArgs.push('-i', streamDownloadPath, '-c:v', 'copy', '-y', targetFilePath);
+        const ffmpegArgs = [];
+        if (trimStartSec > 0) {
+          ffmpegArgs.push('-ss', secondsToFfmpegTime(trimStartSec));
+        }
+        if (trimEndSec && trimEndSec > trimStartSec) {
+          ffmpegArgs.push('-t', String(trimEndSec - trimStartSec));
+        }
+        ffmpegArgs.push('-i', streamDownloadPath, '-c:v', 'copy', '-y', targetFilePath);
 
-          const ffmpegProc = spawn(getFfmpegPath(), ffmpegArgs, { windowsHide: true });
-          abortController.ffmpegProc = ffmpegProc;
+        const ffmpegProc = spawn(getFfmpegPath(), ffmpegArgs, { windowsHide: true });
+        abortController.ffmpegProc = ffmpegProc;
 
-          ffmpegProc.on('close', code => {
-            try { if (fs.existsSync(streamDownloadPath)) fs.unlinkSync(streamDownloadPath); } catch (e) {}
-            activeJobs.delete(jobId);
-
-            if (code === 0 && fs.existsSync(targetFilePath)) {
-              const finalSize = fs.statSync(targetFilePath).size;
-              onComplete({
-                jobId,
-                fileName: targetFileName,
-                relativePath: `${subfolder}/${targetFileName}`,
-                filePath: targetFilePath,
-                fileSize: finalSize,
-                fileSizeFormatted: formatBytes(finalSize),
-                status: 'completed'
-              });
-            } else {
-              onError(new Error(`Video trimming failed with exit code ${code}`));
-            }
-          });
-
-          ffmpegProc.on('error', err => {
-            try { if (fs.existsSync(streamDownloadPath)) fs.unlinkSync(streamDownloadPath); } catch (e) {}
-            activeJobs.delete(jobId);
-            onError(err);
-          });
-
-        } else {
+        ffmpegProc.on('close', code => {
+          try { if (fs.existsSync(streamDownloadPath)) fs.unlinkSync(streamDownloadPath); } catch (e) {}
+          cleanupJobFiles(jobId);
           activeJobs.delete(jobId);
-          const finalSize = fs.existsSync(targetFilePath) ? fs.statSync(targetFilePath).size : downloaded;
-          onComplete({
-            jobId,
-            fileName: targetFileName,
-            relativePath: `${subfolder}/${targetFileName}`,
-            filePath: targetFilePath,
-            fileSize: finalSize,
-            fileSizeFormatted: formatBytes(finalSize),
-            status: 'completed'
-          });
-        }
-      });
 
-      stream.on('error', err => {
-        writeStream.end();
-        try { if (fs.existsSync(streamDownloadPath)) fs.unlinkSync(streamDownloadPath); } catch (e) {}
+          if (code === 0 && fs.existsSync(targetFilePath)) {
+            const finalSize = fs.statSync(targetFilePath).size;
+            onComplete({
+              jobId,
+              fileName: targetFileName,
+              relativePath: `${subfolder}/${targetFileName}`,
+              filePath: targetFilePath,
+              fileSize: finalSize,
+              fileSizeFormatted: formatBytes(finalSize),
+              status: 'completed'
+            });
+          } else {
+            onError(new Error(`Video trimming failed with exit code ${code}`));
+          }
+        });
+
+        ffmpegProc.on('error', err => {
+          try { if (fs.existsSync(streamDownloadPath)) fs.unlinkSync(streamDownloadPath); } catch (e) {}
+          cleanupJobFiles(jobId);
+          activeJobs.delete(jobId);
+          onError(err);
+        });
+
+      } else {
+        cleanupJobFiles(jobId);
         activeJobs.delete(jobId);
-        onError(err);
-      });
-
+        const finalSize = fs.existsSync(targetFilePath) ? fs.statSync(targetFilePath).size : total;
+        onComplete({
+          jobId,
+          fileName: targetFileName,
+          relativePath: `${subfolder}/${targetFileName}`,
+          filePath: targetFilePath,
+          fileSize: finalSize,
+          fileSizeFormatted: formatBytes(finalSize),
+          status: 'completed'
+        });
+      }
       return;
     }
 
@@ -772,70 +905,64 @@ export async function executeDownload(jobId, options, callbacks) {
 
     const isCustomLanguage = audioLanguage && !audioLanguage.includes('Original') && !audioLanguage.includes('Default');
 
-    // Single stream progressive video download (when no trimming and original audio)
+    // Single stream progressive video download (when progressive format with audio exists and no trim/custom audio)
     if (videoFormat && videoFormat.hasAudio && !isCustomLanguage && !isTrimmed && (!audioItag || videoFormat.itag === audioFormat.itag)) {
       const ext = videoFormat.container || 'mp4';
       targetFileName = `${timestampPrefix}${safeTitle} [${videoId}].${ext}`;
       targetFilePath = path.join(destinationDir, targetFileName);
 
-      const stream = await ytdl.download(url, { format: videoFormat });
-      abortController.streams.push(stream);
-
-      const writeStream = fs.createWriteStream(targetFilePath);
-      let downloaded = 0;
       const total = videoFormat.contentLength ? parseInt(videoFormat.contentLength) : 0;
       let startTime = Date.now();
       let lastReport = Date.now();
 
-      stream.on('data', chunk => {
-        if (abortController.aborted) return;
-        downloaded += chunk.length;
-        writeStream.write(chunk);
+      await downloadFormatStream({
+        ytdlInstance: ytdl,
+        url,
+        format: videoFormat,
+        destinationPath: targetFilePath,
+        abortController,
+        fastDownload,
+        onChunkProgress: (downloaded, totalBytes) => {
+          const now = Date.now();
+          if (now - lastReport >= 250) {
+            const elapsedSec = (now - startTime) / 1000;
+            const speedBytesPerSec = downloaded / (elapsedSec || 1);
+            const percent = totalBytes ? Math.min(99, Math.round((downloaded / totalBytes) * 100)) : 50;
+            const etaSec = totalBytes ? Math.round((totalBytes - downloaded) / (speedBytesPerSec || 1)) : 0;
 
-        const now = Date.now();
-        if (now - lastReport >= 300) {
-          const elapsedSec = (now - startTime) / 1000;
-          const speedBytesPerSec = downloaded / (elapsedSec || 1);
-          const percent = total ? Math.min(99, Math.round((downloaded / total) * 100)) : 50;
-          const etaSec = total ? Math.round((total - downloaded) / (speedBytesPerSec || 1)) : 0;
-
-          onProgress({
-            percent: `${percent}%`,
-            speed: `${formatBytes(speedBytesPerSec)}/s`,
-            eta: total ? `${etaSec}s` : '--',
-            totalSize: total ? formatBytes(total) : formatBytes(downloaded),
-            status: 'downloading',
-            message: 'Downloading video & audio...'
-          });
-          lastReport = now;
+            onProgress({
+              percent: `${percent}%`,
+              speed: `${formatBytes(speedBytesPerSec)}/s`,
+              eta: totalBytes ? `${etaSec}s` : '--',
+              totalSize: totalBytes ? formatBytes(totalBytes) : formatBytes(downloaded),
+              status: 'downloading',
+              fastDownload,
+              message: fastDownload
+                ? `⚡ Turbo downloading combined video stream...`
+                : `Downloading video & audio stream...`
+            });
+            lastReport = now;
+          }
         }
       });
 
-      stream.on('end', () => {
-        writeStream.end();
-        activeJobs.delete(jobId);
-        const finalSize = fs.existsSync(targetFilePath) ? fs.statSync(targetFilePath).size : downloaded;
-        onComplete({
-          jobId,
-          fileName: targetFileName,
-          relativePath: `${subfolder}/${targetFileName}`,
-          filePath: targetFilePath,
-          fileSize: finalSize,
-          fileSizeFormatted: formatBytes(finalSize),
-          status: 'completed'
-        });
+      if (abortController.aborted) return;
+      cleanupJobFiles(jobId);
+      activeJobs.delete(jobId);
+      const finalSize = fs.existsSync(targetFilePath) ? fs.statSync(targetFilePath).size : total;
+      onComplete({
+        jobId,
+        fileName: targetFileName,
+        relativePath: `${subfolder}/${targetFileName}`,
+        filePath: targetFilePath,
+        fileSize: finalSize,
+        fileSizeFormatted: formatBytes(finalSize),
+        status: 'completed'
       });
-
-      stream.on('error', err => {
-        writeStream.end();
-        activeJobs.delete(jobId);
-        onError(err);
-      });
-
       return;
     }
 
-    // Separate Video + Audio (or trimmed single stream): Mux / Trim with FFmpeg
+    // Separate Video + Audio: Download Video & Audio IN PARALLEL!
     const langLabel = audioFormat?.audioTrack?.displayName || audioLanguage;
     const langTag = langLabel && !langLabel.includes('Original') && !langLabel.includes('Default') ? ` [${sanitizeFileName(langLabel)}]` : '';
 
@@ -847,112 +974,77 @@ export async function executeDownload(jobId, options, callbacks) {
     const tempVideoPath = path.join(tempDir, `temp_${jobId}_video.mp4`);
     const tempAudioPath = path.join(tempDir, `temp_${jobId}_audio.m4a`);
 
-    // Download video stream
-    onProgress({
-      percent: '10%',
-      speed: '--',
-      eta: '--',
-      totalSize: 'Calculating...',
-      status: 'downloading',
-      message: `Downloading video stream (${videoFormat.qualityLabel || 'HD'})...`
-    });
-
-    const vStream = await ytdl.download(url, { format: videoFormat });
-    abortController.streams.push(vStream);
-    const vWriteStream = fs.createWriteStream(tempVideoPath);
-
     let vDownloaded = 0;
+    let aDownloaded = 0;
     const vTotal = videoFormat.contentLength ? parseInt(videoFormat.contentLength) : 0;
-    let vStartTime = Date.now();
-    let vLastReport = Date.now();
+    const aTotal = audioFormat.contentLength ? parseInt(audioFormat.contentLength) : 0;
+    const grandTotal = vTotal + aTotal;
+    let startTime = Date.now();
+    let lastReport = Date.now();
 
-    await new Promise((resolve, reject) => {
-      vStream.on('data', chunk => {
-        if (abortController.aborted) return;
-        vDownloaded += chunk.length;
-        vWriteStream.write(chunk);
+    const reportBothProgress = () => {
+      const now = Date.now();
+      if (now - lastReport < 250) return;
+      lastReport = now;
 
-        const now = Date.now();
-        if (now - vLastReport >= 300) {
-          const elapsedSec = (now - vStartTime) / 1000;
-          const speedBytesPerSec = vDownloaded / (elapsedSec || 1);
-          const vPercent = vTotal ? Math.round((vDownloaded / vTotal) * 70) : 35;
-          const etaSec = vTotal ? Math.round((vTotal - vDownloaded) / (speedBytesPerSec || 1)) : 0;
+      const totalDown = vDownloaded + aDownloaded;
+      const elapsedSec = (now - startTime) / 1000;
+      const speedBytesPerSec = totalDown / (elapsedSec || 1);
+      const percent = grandTotal ? Math.min(88, Math.round((totalDown / grandTotal) * 88)) : 45;
+      const etaSec = grandTotal ? Math.round((grandTotal - totalDown) / (speedBytesPerSec || 1)) : 0;
 
-          onProgress({
-            percent: `${vPercent}%`,
-            speed: `${formatBytes(speedBytesPerSec)}/s`,
-            eta: vTotal ? `${etaSec}s` : '--',
-            totalSize: vTotal ? formatBytes(vTotal) : formatBytes(vDownloaded),
-            status: 'downloading',
-            message: `Downloading video stream (${videoFormat.qualityLabel || 'HD'})...`
-          });
-          vLastReport = now;
-        }
+      onProgress({
+        percent: `${percent}%`,
+        speed: `${formatBytes(speedBytesPerSec)}/s`,
+        eta: grandTotal ? `${etaSec}s` : '--',
+        totalSize: grandTotal ? formatBytes(grandTotal) : formatBytes(totalDown),
+        status: 'downloading',
+        fastDownload,
+        message: fastDownload
+          ? `⚡ Turbo downloading Video (${videoFormat.qualityLabel || 'HD'}) & Audio in parallel chunks...`
+          : `Downloading Video (${videoFormat.qualityLabel || 'HD'}) & Audio streams...`
       });
-      vStream.on('end', () => {
-        vWriteStream.end();
-        resolve();
-      });
-      vStream.on('error', err => {
-        vWriteStream.end();
-        reject(err);
-      });
-    });
+    };
 
-    if (abortController.aborted) return;
-
-    // Download audio stream
     onProgress({
-      percent: '70%',
+      percent: '5%',
       speed: '--',
       eta: '--',
-      totalSize: 'Calculating...',
+      totalSize: grandTotal ? formatBytes(grandTotal) : 'Calculating...',
       status: 'downloading',
-      message: `Downloading audio stream (${audioFormat.audioTrack?.displayName || 'Original'})...`
+      fastDownload,
+      message: fastDownload
+        ? `⚡ Initializing multi-threaded parallel streams for Video & Audio...`
+        : `Initializing video & audio download streams...`
     });
 
-    const aStream = await ytdl.download(url, { format: audioFormat });
-    abortController.streams.push(aStream);
-    const aWriteStream = fs.createWriteStream(tempAudioPath);
-
-    let aDownloaded = 0;
-    const aTotal = audioFormat.contentLength ? parseInt(audioFormat.contentLength) : 0;
-    let aStartTime = Date.now();
-    let aLastReport = Date.now();
-
-    await new Promise((resolve, reject) => {
-      aStream.on('data', chunk => {
-        if (abortController.aborted) return;
-        aDownloaded += chunk.length;
-        aWriteStream.write(chunk);
-
-        const now = Date.now();
-        if (now - aLastReport >= 300) {
-          const elapsedSec = (now - aStartTime) / 1000;
-          const speedBytesPerSec = aDownloaded / (elapsedSec || 1);
-          const aPercent = aTotal ? 70 + Math.round((aDownloaded / aTotal) * 20) : 80;
-
-          onProgress({
-            percent: `${aPercent}%`,
-            speed: `${formatBytes(speedBytesPerSec)}/s`,
-            eta: '--',
-            totalSize: aTotal ? formatBytes(aTotal) : formatBytes(aDownloaded),
-            status: 'downloading',
-            message: `Downloading audio (${audioFormat.audioTrack?.displayName || 'Original'})...`
-          });
-          aLastReport = now;
+    // Execute Video & Audio downloads simultaneously in parallel!
+    await Promise.all([
+      downloadFormatStream({
+        ytdlInstance: ytdl,
+        url,
+        format: videoFormat,
+        destinationPath: tempVideoPath,
+        abortController,
+        fastDownload,
+        onChunkProgress: (down, tot) => {
+          vDownloaded = down;
+          reportBothProgress();
         }
-      });
-      aStream.on('end', () => {
-        aWriteStream.end();
-        resolve();
-      });
-      aStream.on('error', err => {
-        aWriteStream.end();
-        reject(err);
-      });
-    });
+      }),
+      downloadFormatStream({
+        ytdlInstance: ytdl,
+        url,
+        format: audioFormat,
+        destinationPath: tempAudioPath,
+        abortController,
+        fastDownload,
+        onChunkProgress: (down, tot) => {
+          aDownloaded = down;
+          reportBothProgress();
+        }
+      })
+    ]);
 
     if (abortController.aborted) return;
 
@@ -1010,6 +1102,7 @@ export async function executeDownload(jobId, options, callbacks) {
     ffmpegProc.on('close', code => {
       try { if (fs.existsSync(tempVideoPath)) fs.unlinkSync(tempVideoPath); } catch (e) {}
       try { if (fs.existsSync(tempAudioPath)) fs.unlinkSync(tempAudioPath); } catch (e) {}
+      cleanupJobFiles(jobId);
       activeJobs.delete(jobId);
 
       if (code === 0 && fs.existsSync(targetFilePath)) {
@@ -1031,11 +1124,13 @@ export async function executeDownload(jobId, options, callbacks) {
     ffmpegProc.on('error', err => {
       try { if (fs.existsSync(tempVideoPath)) fs.unlinkSync(tempVideoPath); } catch (e) {}
       try { if (fs.existsSync(tempAudioPath)) fs.unlinkSync(tempAudioPath); } catch (e) {}
+      cleanupJobFiles(jobId);
       activeJobs.delete(jobId);
       onError(err);
     });
 
   } catch (err) {
+    cleanupJobFiles(jobId);
     activeJobs.delete(jobId);
     onError(err);
   }
@@ -1045,12 +1140,20 @@ export function cancelJob(jobId) {
   const job = activeJobs.get(jobId);
   if (job) {
     job.aborted = true;
-    for (const s of job.streams) {
-      try { s.destroy(); } catch (e) {}
+    if (job.fetchControllers) {
+      for (const fc of job.fetchControllers) {
+        try { fc.abort(); } catch (e) {}
+      }
+    }
+    if (job.streams) {
+      for (const s of job.streams) {
+        try { s.destroy(); } catch (e) {}
+      }
     }
     if (job.ffmpegProc) {
       try { job.ffmpegProc.kill(); } catch (e) {}
     }
+    cleanupJobFiles(jobId);
     activeJobs.delete(jobId);
     return { success: true };
   }

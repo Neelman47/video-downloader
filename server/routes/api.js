@@ -151,6 +151,8 @@ router.post('/download', (req, res) => {
     subfolderOverride
   } = req.body;
 
+  const fastDownload = req.body.fastDownload === true || req.body.fastDownload === 'true' || req.body.fastDownload === undefined;
+
   if (!url) {
     return res.status(400).json({ error: 'URL is required' });
   }
@@ -170,12 +172,13 @@ router.post('/download', (req, res) => {
     container: container || 'mp4',
     trimStart: trimStart || null,
     trimEnd: trimEnd || null,
+    fastDownload,
     status: 'starting',
     percent: '0%',
     speed: '--',
     eta: '--',
     totalSize: '--',
-    message: 'Starting download...',
+    message: fastDownload ? 'Starting Turbo multi-threaded download...' : 'Starting download...',
     createdAt: new Date().toISOString()
   };
 
@@ -191,7 +194,8 @@ router.post('/download', (req, res) => {
     container,
     trimStart,
     trimEnd,
-    subfolderOverride
+    subfolderOverride,
+    fastDownload
   }, {
     onProgress: (progress) => {
       const current = jobStore.get(jobId) || initialJobState;

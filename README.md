@@ -23,6 +23,7 @@ StreamVault provides three dedicated top-level tabs:
   - Complete list of captions with instant **.SRT** and **.VTT** download options.
   - Full expandable description viewer.
 - **Video Trimming**: Interactive start and end time sliders with live clip duration calculation.
+- **⚡ Turbo Multi-Threaded Chunk Accelerator**: Parallel multi-connection byte-range downloader with concurrent video+audio fetching and seamless chunk stitching.
 - **Subtitles**: Download `.srt` or `.vtt` subtitles for any available language.
 - **Playlists**: Full video checklist, batch selection, and sequential queue execution.
 

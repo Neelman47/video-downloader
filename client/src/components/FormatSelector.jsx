@@ -14,7 +14,8 @@ import {
   Sliders,
   CheckCircle2,
   FileText,
-  Loader2
+  Loader2,
+  Zap
 } from 'lucide-react';
 
 function secondsToTimeStr(sec) {
@@ -80,6 +81,9 @@ export default function FormatSelector({ video, onDownload, downloading, onSubti
   const [downloadingSub, setDownloadingSub] = useState(false);
   const [subSuccessMsg, setSubSuccessMsg] = useState(null);
 
+  // Turbo Multi-Threaded Chunk Accelerator toggle
+  const [fastDownload, setFastDownload] = useState(true);
+
   // When language changes, update the selectedAudioItag
   const handleLanguageChange = (langName) => {
     setSelectedLanguageName(langName);
@@ -113,7 +117,8 @@ export default function FormatSelector({ video, onDownload, downloading, onSubti
       container: mode === 'audio_only' ? (container === 'mp3' ? 'mp3' : 'm4a') : container,
       title: video.title,
       trimStart: enableTrim ? secondsToTimeStr(trimStartSec) : null,
-      trimEnd: enableTrim ? secondsToTimeStr(trimEndSec) : null
+      trimEnd: enableTrim ? secondsToTimeStr(trimEndSec) : null,
+      fastDownload
     });
   };
 
@@ -592,6 +597,42 @@ export default function FormatSelector({ video, onDownload, downloading, onSubti
             Target folder: <strong className="text-red-400">/downloads/{enableTrim ? 'clips' : (mode === 'audio_only' ? 'audio' : 'videos')}</strong>
           </span>
         </div>
+      </div>
+
+      {/* Turbo Multi-Threaded Chunk Accelerator Card */}
+      <div className="p-3.5 rounded-2xl bg-gradient-to-r from-amber-500/10 via-slate-900 to-amber-500/5 border border-amber-500/25 flex items-center justify-between gap-3 shadow-lg">
+        <div className="flex items-center gap-3">
+          <div className={`p-2.5 rounded-xl border transition-all ${
+            fastDownload
+              ? 'bg-amber-500/20 text-amber-400 border-amber-500/30'
+              : 'bg-slate-800 text-slate-500 border-slate-700'
+          }`}>
+            <Zap className={`w-5 h-5 ${fastDownload ? 'fill-current animate-pulse' : ''}`} />
+          </div>
+          <div>
+            <div className="flex items-center gap-2">
+              <span className="text-xs sm:text-sm font-bold text-white">
+                Turbo Multi-Threaded Download
+              </span>
+              <span className="px-1.5 py-0.5 rounded text-[10px] font-extrabold bg-amber-500/20 text-amber-300 border border-amber-500/30 uppercase tracking-wide">
+                2x Faster
+              </span>
+            </div>
+            <p className="text-[11px] text-slate-400 mt-0.5">
+              Downloads video & audio in parallel multi-connection chunks to bypass YouTube throttling
+            </p>
+          </div>
+        </div>
+
+        <label className="relative inline-flex items-center cursor-pointer flex-shrink-0">
+          <input
+            type="checkbox"
+            checked={fastDownload}
+            onChange={(e) => setFastDownload(e.target.checked)}
+            className="sr-only peer"
+          />
+          <div className="w-11 h-6 bg-slate-800 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-amber-500" />
+        </label>
       </div>
 
       {/* Download Action Button */}

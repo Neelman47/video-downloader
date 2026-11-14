@@ -67,9 +67,16 @@ export default function DownloadProgress({ job, onCancel, onOpenFolder, onDownlo
       {/* Progress Bar */}
       <div className="mt-4">
         <div className="flex items-center justify-between text-xs font-semibold mb-1.5">
-          <span className="text-slate-300">
-            {isCompleted ? '100%' : job.percent || '0%'}
-          </span>
+          <div className="flex items-center gap-2">
+            <span className="text-slate-300">
+              {isCompleted ? '100%' : job.percent || '0%'}
+            </span>
+            {job.fastDownload && (
+              <span className="px-1.5 py-0.2 rounded text-[10px] font-bold bg-amber-500/20 text-amber-300 border border-amber-500/30">
+                ⚡ Turbo Multi-Threaded
+              </span>
+            )}
+          </div>
           <div className="flex items-center gap-3 text-slate-400 font-mono text-[11px]">
             {job.speed && job.speed !== '--' && <span>⚡ {job.speed}</span>}
             {job.eta && job.eta !== '--' && <span>⏱️ ETA: {job.eta}</span>}

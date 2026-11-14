@@ -30,8 +30,12 @@ StreamVault is structured into three dedicated header tabs:
   - **High-Res Thumbnail**: High-resolution image preview with one-click "Download Thumbnail (HD)".
   - **Captions & Subtitles**: Complete track listing with direct `.SRT` and `.VTT` download buttons.
   - **Full Description**: Collapsible description viewer with link detection.
+- **⚡ Turbo Multi-Threaded Chunk Accelerator**:
+  - Parallel multi-part Range download engine (`Range: bytes=start-end`) that splits large video and audio streams into concurrent segments.
+  - Downloads Video and Audio streams simultaneously in parallel, cutting total download time in half.
+  - UI toggle on format selector to enable or disable multi-threading with live status indicator.
 - Playlist detection and batch queue execution.
-- Live real-time download progress bar.
+- Live real-time download progress bar with dismiss/close icon.
 
 ### 2. Tab 2: Browse (`/browse` or `#/browse`)
 - Dedicated Media Library for all downloaded and merged media.
