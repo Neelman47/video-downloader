@@ -1,5 +1,5 @@
 import React from 'react';
-import { Download, FolderOpen, Layers, Play } from 'lucide-react';
+import { Download, FolderOpen, Layers, Play, Mic } from 'lucide-react';
 
 export default function Navbar({
   activeTab = 'downloader',
@@ -86,6 +86,23 @@ export default function Navbar({
             <span>Merge</span>
             <span className="hidden sm:inline px-1.5 py-0.2 rounded text-[9px] font-extrabold uppercase bg-amber-500/10 text-amber-400 border border-amber-500/20">
               New
+            </span>
+          </button>
+
+          {/* Tab 4: Dubbing & TTS */}
+          <button
+            type="button"
+            onClick={() => onTabChange('voice')}
+            className={`flex items-center gap-2 px-3 sm:px-4 py-2 rounded-xl text-xs sm:text-sm font-semibold transition-all ${
+              activeTab === 'voice'
+                ? 'bg-gradient-to-r from-red-600 to-rose-600 text-white shadow-md shadow-red-600/30'
+                : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/60'
+            }`}
+          >
+            <Mic className="w-4 h-4 text-violet-400" />
+            <span>Dubbing & TTS</span>
+            <span className="hidden sm:inline px-1.5 py-0.2 rounded text-[9px] font-extrabold uppercase bg-violet-500/10 text-violet-400 border border-violet-500/20">
+              AI
             </span>
           </button>
         </nav>

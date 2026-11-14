@@ -18,7 +18,9 @@ import {
   Calendar,
   Search,
   X,
-  Filter
+  Filter,
+  Mic,
+  Languages
 } from 'lucide-react';
 
 export default function DownloadedList({
@@ -72,6 +74,8 @@ export default function DownloadedList({
       if (activeCategory === 'subtitles' && f.category !== 'subtitles' && f.type !== 'subtitle') return false;
       if (activeCategory === 'playlists' && f.category !== 'playlists') return false;
       if (activeCategory === 'merged' && f.category !== 'merged') return false;
+      if (activeCategory === 'dubbed' && f.category !== 'dubbed') return false;
+      if (activeCategory === 'tts' && f.category !== 'tts') return false;
 
       // 2. Date filter
       const fileDate = new Date(f.createdAt || f.modifiedAt);
@@ -112,7 +116,9 @@ export default function DownloadedList({
       clips: files.filter((f) => f.category === 'clips').length,
       subtitles: files.filter((f) => f.category === 'subtitles' || f.type === 'subtitle').length,
       playlists: files.filter((f) => f.category === 'playlists').length,
-      merged: files.filter((f) => f.category === 'merged').length
+      merged: files.filter((f) => f.category === 'merged').length,
+      dubbed: files.filter((f) => f.category === 'dubbed').length,
+      tts: files.filter((f) => f.category === 'tts').length
     };
   }, [files]);
 
@@ -187,7 +193,13 @@ export default function DownloadedList({
           {/* Open Subfolder or Root */}
           <button
             type="button"
-            onClick={() => onOpenFolder(activeCategory === 'all' ? '' : activeCategory === 'merged' ? 'merged_items' : activeCategory)}
+            onClick={() => onOpenFolder(
+              activeCategory === 'all' ? '' :
+              activeCategory === 'merged' ? 'merged_items' :
+              activeCategory === 'dubbed' ? 'dubbed_audio' :
+              activeCategory === 'tts' ? 'tts_audio' :
+              activeCategory
+            )}
             className="flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold text-slate-200 bg-slate-800 hover:bg-slate-700 rounded-xl transition-all border border-slate-700/50 shadow"
             title={`Open /downloads${activeCategory !== 'all' ? `/${activeCategory}` : ''} in File Explorer`}
           >
@@ -219,7 +231,9 @@ export default function DownloadedList({
           { id: 'clips', label: 'Clips', icon: Scissors },
           { id: 'subtitles', label: 'Subtitles', icon: Subtitles },
           { id: 'playlists', label: 'Playlists', icon: ListVideo },
-          { id: 'merged', label: 'Merged Items', icon: Layers }
+          { id: 'merged', label: 'Merged Items', icon: Layers },
+          { id: 'dubbed', label: 'AI Dubbed', icon: Languages },
+          { id: 'tts', label: 'TTS Audio', icon: Mic }
         ].map((tab) => {
           const Icon = tab.icon;
           const isActive = activeCategory === tab.id;
@@ -363,6 +377,8 @@ export default function DownloadedList({
               const isClip = file.category === 'clips';
               const isSub = file.category === 'subtitles' || file.type === 'subtitle';
               const isMerged = file.category === 'merged';
+              const isDubbed = file.category === 'dubbed';
+              const isTTS = file.category === 'tts';
               const isPlaylist = file.category === 'playlists';
 
               return (
@@ -387,6 +403,8 @@ export default function DownloadedList({
                     </button>
 
                     <div className={`p-2.5 rounded-xl flex-shrink-0 ${
+                      isDubbed ? 'bg-violet-500/15 text-violet-400 border border-violet-500/30' :
+                      isTTS ? 'bg-indigo-500/15 text-indigo-400 border border-indigo-500/30' :
                       isMerged ? 'bg-amber-500/15 text-amber-400 border border-amber-500/30' :
                       isClip ? 'bg-rose-500/10 text-rose-400 border border-rose-500/20' :
                       isSub ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20' :
@@ -394,13 +412,15 @@ export default function DownloadedList({
                       isAudio ? 'bg-sky-500/10 text-sky-400 border border-sky-500/20' :
                       'bg-slate-800 text-slate-400'
                     }`}>
-                      {isMerged && <Layers className="w-4 h-4 text-amber-400" />}
-                      {!isMerged && isClip && <Scissors className="w-4 h-4" />}
-                      {!isMerged && !isClip && isSub && <Subtitles className="w-4 h-4" />}
-                      {!isMerged && !isClip && !isSub && isPlaylist && <ListVideo className="w-4 h-4" />}
-                      {!isMerged && !isClip && !isSub && !isPlaylist && isVideo && <Film className="w-4 h-4" />}
-                      {!isMerged && !isClip && !isSub && !isPlaylist && isAudio && <Music className="w-4 h-4" />}
-                      {!isMerged && !isClip && !isSub && !isPlaylist && !isVideo && !isAudio && <FileText className="w-4 h-4" />}
+                      {isDubbed && <Languages className="w-4 h-4 text-violet-400" />}
+                      {!isDubbed && isTTS && <Mic className="w-4 h-4 text-indigo-400" />}
+                      {!isDubbed && !isTTS && isMerged && <Layers className="w-4 h-4 text-amber-400" />}
+                      {!isDubbed && !isTTS && !isMerged && isClip && <Scissors className="w-4 h-4" />}
+                      {!isDubbed && !isTTS && !isMerged && !isClip && isSub && <Subtitles className="w-4 h-4" />}
+                      {!isDubbed && !isTTS && !isMerged && !isClip && !isSub && isPlaylist && <ListVideo className="w-4 h-4" />}
+                      {!isDubbed && !isTTS && !isMerged && !isClip && !isSub && !isPlaylist && isVideo && <Film className="w-4 h-4" />}
+                      {!isDubbed && !isTTS && !isMerged && !isClip && !isSub && !isPlaylist && isAudio && <Music className="w-4 h-4" />}
+                      {!isDubbed && !isTTS && !isMerged && !isClip && !isSub && !isPlaylist && !isVideo && !isAudio && <FileText className="w-4 h-4" />}
                     </div>
 
                     <div className="min-w-0 flex-1">

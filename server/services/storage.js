@@ -15,7 +15,9 @@ export const SUBFOLDERS = {
   SUBTITLES: 'subtitles',
   CLIPS: 'clips',
   PLAYLISTS: 'playlists',
-  MERGED: 'merged_items'
+  MERGED: 'merged_items',
+  DUBBED: 'dubbed_audio',
+  TTS: 'tts_audio'
 };
 
 // Ensure downloads directory and subdirectories exist
@@ -111,7 +113,11 @@ export function listDownloadedFiles() {
             type = 'subtitle';
           }
 
-          if (relativeDir.startsWith(SUBFOLDERS.MERGED)) {
+          if (relativeDir.startsWith(SUBFOLDERS.DUBBED)) {
+            category = 'dubbed';
+          } else if (relativeDir.startsWith(SUBFOLDERS.TTS)) {
+            category = 'tts';
+          } else if (relativeDir.startsWith(SUBFOLDERS.MERGED)) {
             category = 'merged';
           } else if (relativeDir.startsWith(SUBFOLDERS.CLIPS)) {
             category = 'clips';

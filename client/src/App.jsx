@@ -7,14 +7,15 @@ import DownloadProgress from './components/DownloadProgress.jsx';
 import DownloadedList from './components/DownloadedList.jsx';
 import PlaylistView from './components/PlaylistView.jsx';
 import MergeView from './components/MergeView.jsx';
+import VoiceStudio from './components/VoiceStudio.jsx';
 import VideoMetadataCard from './components/VideoMetadataCard.jsx';
 import { Sparkles } from 'lucide-react';
 
 export default function App() {
-  // Navigation: 'downloader' | 'browse' | 'merge'
+  // Navigation: 'downloader' | 'browse' | 'merge' | 'voice'
   const [activeTab, setActiveTab] = useState(() => {
     const hash = window.location.hash.replace('#/', '').replace('#', '');
-    if (['browse', 'merge'].includes(hash)) return hash;
+    if (['browse', 'merge', 'voice'].includes(hash)) return hash;
     return 'downloader';
   });
 
@@ -40,7 +41,7 @@ export default function App() {
   useEffect(() => {
     const onHashChange = () => {
       const hash = window.location.hash.replace('#/', '').replace('#', '');
-      if (['downloader', 'browse', 'merge'].includes(hash)) {
+      if (['downloader', 'browse', 'merge', 'voice'].includes(hash)) {
         setActiveTab(hash);
       } else if (!hash) {
         setActiveTab('downloader');
@@ -440,6 +441,20 @@ export default function App() {
               onMergeComplete={fetchDownloadedFiles}
               onOpenFolder={handleOpenFolder}
               onDownloadFile={handleDownloadFile}
+            />
+          </div>
+        )}
+
+        {/* ========================================================= */}
+        {/* TAB 4: DUBBING & TTS (AI Voice Studio)                    */}
+        {/* ========================================================= */}
+        {activeTab === 'voice' && (
+          <div className="animate-fadeIn">
+            <VoiceStudio
+              files={downloadedFiles}
+              onOpenFolder={handleOpenFolder}
+              onDownloadFile={handleDownloadFile}
+              onRefreshFiles={fetchDownloadedFiles}
             />
           </div>
         )}

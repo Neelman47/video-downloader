@@ -21,6 +21,12 @@ import {
   SUBFOLDERS
 } from '../services/storage.js';
 import { executeMerge, cancelMergeJob } from '../services/merger.js';
+import {
+  checkVoiceSystemStatus,
+  generateTTS,
+  executeDubbing,
+  cancelDubbingJob
+} from '../services/voiceStudio.js';
 
 const router = express.Router();
 
@@ -504,6 +510,125 @@ router.post('/files/open-folder', (req, res) => {
   const { subfolder = '' } = req.body || {};
   const result = openDownloadsFolder(subfolder);
   res.json({ ok: true, data: result });
+});
+
+// 17. Voice Studio Status & Capabilities
+router.get('/voice/status', (req, res) => {
+  const status = checkVoiceSystemStatus();
+  res.json({ ok: true, data: status });
+});
+
+// 18. Text to Speech (TTS Studio)
+router.post('/voice/tts', async (req, res) => {
+  try {
+    const result = await generateTTS(req.body);
+    res.json({ ok: true, data: result });
+  } catch (err) {
+    res.status(400).json({ error: err.message || 'TTS generation failed' });
+  }
+});
+
+// 19. AI Audio Dubbing (English -> Hindi or Gujarati)
+router.post('/voice/dub', upload.fields([
+  { name: 'audioFile', maxCount: 1 }
+]), (req, res) => {
+  const uploadedFile = req.files?.audioFile?.[0];
+  const inputAudioPath = uploadedFile?.path || req.body.inputAudioPath;
+
+  const {
+    targetLanguage = 'hi',
+    voiceGender = 'auto',
+    separationMode = 'auto',
+    apiKey,
+    transcriptText,
+    outputName
+  } = req.body;
+
+  if (!inputAudioPath) {
+    return res.status(400).json({ error: 'Audio input file is required' });
+  }
+
+  const jobId = crypto.randomUUID();
+  const initialJobState = {
+    jobId,
+    type: 'dubbing',
+    targetLanguage,
+    voiceGender,
+    status: 'starting',
+    percent: '5%',
+    message: 'Initializing AI Audio Dubber...',
+    createdAt: new Date().toISOString()
+  };
+
+  jobStore.set(jobId, initialJobState);
+
+  const cleanupUpload = () => {
+    try {
+      if (uploadedFile?.path && fs.existsSync(uploadedFile.path)) {
+        fs.unlinkSync(uploadedFile.path);
+      }
+    } catch (e) {}
+  };
+
+  executeDubbing(jobId, {
+    inputAudioPath,
+    targetLanguage,
+    voiceGender,
+    separationMode,
+    apiKey,
+    transcriptText,
+    outputName
+  }, {
+    onProgress: (progress) => {
+      const current = jobStore.get(jobId) || initialJobState;
+      const updated = { ...current, ...progress, updatedAt: new Date().toISOString() };
+      jobStore.set(jobId, updated);
+      notifySse(jobId, updated);
+    },
+    onComplete: (result) => {
+      cleanupUpload();
+      const current = jobStore.get(jobId) || initialJobState;
+      const completedState = {
+        ...current,
+        ...result,
+        percent: '100%',
+        status: 'completed',
+        completedAt: new Date().toISOString()
+      };
+      jobStore.set(jobId, completedState);
+      notifySse(jobId, completedState);
+    },
+    onError: (err) => {
+      cleanupUpload();
+      const current = jobStore.get(jobId) || initialJobState;
+      const errorState = {
+        ...current,
+        status: 'error',
+        error: err.message || 'Dubbing failed',
+        failedAt: new Date().toISOString()
+      };
+      jobStore.set(jobId, errorState);
+      notifySse(jobId, errorState);
+    }
+  });
+
+  res.json({ ok: true, jobId });
+});
+
+// 20. Cancel dubbing
+router.post('/voice/cancel/:jobId', (req, res) => {
+  const { jobId } = req.params;
+  const result = cancelDubbingJob(jobId);
+  if (result.success) {
+    const job = jobStore.get(jobId);
+    if (job) {
+      const cancelledState = { ...job, status: 'cancelled', message: 'Dubbing cancelled by user' };
+      jobStore.set(jobId, cancelledState);
+      notifySse(jobId, cancelledState);
+    }
+    return res.json({ ok: true });
+  }
+  res.status(400).json({ error: result.error });
 });
 
 export default router;

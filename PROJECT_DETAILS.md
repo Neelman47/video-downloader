@@ -13,10 +13,10 @@
 
 ## 2. Navigation Architecture & Tabs
 
-StreamVault is structured into three dedicated header tabs:
+StreamVault is structured into four dedicated header tabs:
 
 ```
-[ 🎬 StreamVault ]        [ 📥 Downloader ]  [ 📁 Browse (Count) ]  [ 🔀 Merge ]        [ 📂 Downloads Folder ]
+[ 🎬 StreamVault ]   [ 📥 Downloader ]  [ 📁 Browse (Count) ]  [ 🔀 Merge ]  [ 🎙️ Dubbing & TTS ]   [ 📂 Downloads Folder ]
 ```
 
 ### 1. Tab 1: Downloader (`/` or `#/`)
@@ -82,6 +82,38 @@ StreamVault is structured into three dedicated header tabs:
 - **Output Container**: `.mp4` or `.mkv`.
 - **Output Destination**: Automatically exported to `downloads/merged_items/` with timestamp prefix (`YYYYMMDD_HHMM_`).
 
+### 4. Tab 4: Dubbing & TTS (`/voice` or `#/voice`)
+- Dedicated AI Audio & Voiceover workstation featuring two major sub-tools:
+  1. **AI Voice Dubber (English to Hindi / Gujarati Converter)**:
+     - **Input**: English audio track selected from downloaded library (`audio/`, `videos/`, `clips/`) or uploaded from local computer.
+     - **Target Languages**:
+       - **Hindi (हिंदी)**: `hi-IN-MadhurNeural` (Male) / `hi-IN-SwaraNeural` (Female).
+       - **Gujarati (ગુજરાતી)**: `gu-IN-NiranjanNeural` (Male) / `gu-IN-DhwaniNeural` (Female).
+     - **Gender Selection**: Auto-Detect, Male, or Female.
+     - **Background Sound Preservation**:
+       - Local stem separation powered by **Python Demucs** isolates foreground vocals (`vocals.wav`) from the background instruments and music (`no_vocals.wav`).
+       - Graceful fallback: when Demucs is not installed, an FFmpeg vocal attenuation bandpass filter removes center-panned voice frequencies.
+     - **Speech Recognition & Natural Translation**:
+       - Context-aware dialogue translation via free Google Gemini 1.5 Flash API key (with user API Key modal/drawer).
+       - Zero-barrier fallback: uses free Google Translate endpoint if no Gemini key is provided.
+     - **Smart Mixing**: FFmpeg audio ducking automatically ducks background volume to 30% whenever dubbed dialogue speaks, restoring full level during pauses.
+     - **Destination**: Exported into `downloads/dubbed_audio/` with timestamp prefix (`YYYYMMDD_HHMM_`).
+  2. **Text to Audio (TTS Studio)**:
+     - **Input**: Multi-line custom script or dialogue in English, Hindi, or Gujarati (with quick sample prompts and character counter).
+     - **Voice Actors**:
+       - English (US): Guy (Natural Male) / Jenny (Natural Female).
+       - Hindi (India): Madhur (Natural Male) / Swara (Natural Female).
+       - Gujarati (India): Niranjan (Natural Male) / Dhwani (Natural Female).
+     - **4 Distinct Tones & Delivery Personas**:
+       - **Conversational / Friendly**: Natural pacing for vlogs, podcasts, and casual dialogue (`+0%` speed, `+0Hz` pitch).
+       - **Professional / Formal / News**: Steady, authoritative cadence for tutorials & presentations (`-4%` speed, `-2Hz` pitch).
+       - **Energetic / Storyteller**: Dynamic, upbeat delivery for entertainment, shorts, and reels (`+14%` speed, `+4Hz` pitch).
+       - **Calm / Relaxed / Audiobook**: Soothing, gentle cadence for storytelling, documentaries, and meditation (`-10%` speed, `-3Hz` pitch).
+     - **Voice Modulator Controls**: Custom speed slider (`0.8x` to `1.4x`) and custom pitch slider (`-10Hz` to `+10Hz`).
+     - **Destination**: Exported into `downloads/tts_audio/` with timestamp prefix (`YYYYMMDD_HHMM_`).
+  3. **Live Engine Specifications & Roadmap Info Box**:
+     - Collapsible info box detailing the active engines (Microsoft Edge Neural TTS, Gemini 1.5 Flash / Groq, Python Demucs stem separation, FFmpeg ducking mixer) and the future offline roadmap (Offline Whisper, Voice Cloning, Multi-speaker Diarization).
+
 ---
 
 ## 3. Storage Architecture
@@ -93,10 +125,12 @@ downloads/
 ├── clips/         # Trimmed segments
 ├── subtitles/     # Subtitle files (.srt / .vtt)
 ├── playlists/     # Playlist & batch downloads
-└── merged_items/  # Outputs from the Media Merger engine
+├── merged_items/  # Outputs from the Media Merger engine
+├── dubbed_audio/  # Outputs from the AI Voice Dubber engine
+└── tts_audio/     # Outputs from the Text-to-Speech Studio
 ```
 
-- Every downloaded or merged file follows the timestamp naming convention: `YYYYMMDD_HHMM_filename.ext`.
+- Every downloaded, merged, dubbed, or synthesized file follows the timestamp naming convention: `YYYYMMDD_HHMM_filename.ext`.
 
 ---
 
@@ -114,6 +148,9 @@ downloads/
 | **Build Tool** | Vite | `^5.4.11` | Hot module replacement & production bundler |
 | **CSS Framework** | Tailwind CSS | `^3.4.17` | Utility-first responsive styling |
 | **Icons** | Lucide React | `^0.468.0` | Modern SVG interface icons |
+| **Neural TTS** | @andresaya/edge-tts | `^1.9.1` | Studio-grade Microsoft Edge Neural Text-to-Speech client |
+| **Vocal Isolation** | Python Demucs | Local `demucs` CLI (Optional) | Deep learning stem separation (isolating vocals from music) |
+| **AI Translation** | Google Gemini 1.5 Flash / Google Translate | Free API Key / REST | Context-aware translation & transcription |
 
 ---
 
@@ -128,6 +165,10 @@ downloads/
 | `POST` | `/api/download/subtitle` | Download subtitle track as `.srt` or `.vtt` |
 | `POST` | `/api/merge` | Merge Video + Audio + Subtitles into `downloads/merged_items/` |
 | `POST` | `/api/merge/cancel/:jobId` | Cancel in-flight merge job |
+| `GET` | `/api/voice/status` | Demucs, Python, Gemini key, and supported voice/tone roster |
+| `POST` | `/api/voice/tts` | Synthesize custom text into speech saved to `downloads/tts_audio/` |
+| `POST` | `/api/voice/dub` | Dub audio from English to Hindi/Gujarati with background preservation |
+| `POST` | `/api/voice/cancel/:jobId` | Cancel in-flight audio dubbing job |
 | `GET` | `/api/files` | List all files across all subfolders |
 | `DELETE` | `/api/files/:fileName` | Delete single downloaded file |
 | `POST` | `/api/files/delete-multiple` | Delete selected array of files |
