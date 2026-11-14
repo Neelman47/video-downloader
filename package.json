@@ -1,0 +1,15 @@
+{
+  "name": "yt-video-downloader",
+  "version": "1.0.0",
+  "description": "Full-stack YouTube Video & Audio Downloader with format and language selector",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node server/index.js",
+    "server": "node server/index.js",
+    "client": "npm run dev --prefix client",
+    "dev": "node dev.js",
+    "build": "npm run build --prefix client",
+    "install:all": "npm install --prefix server && npm install --prefix client"
+  }
+}

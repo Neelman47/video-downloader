@@ -1,0 +1,27 @@
+# Set default behavior to LF (Unix-style) for cross-platform consistency
+* text=auto eol=lf
+
+# Explicitly ensure web source files always use LF
+*.js text eol=lf
+*.jsx text eol=lf
+*.json text eol=lf
+*.html text eol=lf
+*.css text eol=lf
+*.md text eol=lf
+*.sh text eol=lf
+.gitignore text eol=lf
+
+# Windows batch files must retain CRLF
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# Binary assets
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.mp4 binary
+*.mp3 binary
+*.m4a binary
+*.exe binary
