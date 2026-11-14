@@ -1,7 +1,12 @@
 import { spawn } from 'child_process';
 import path from 'path';
 
-console.log('🚀 Starting YouTube Downloader Server and Client...\n');
+console.log('\n=============================================================');
+console.log('🚀 StreamVault YouTube Downloader - Development Mode');
+console.log('👉 Frontend Dev UI:   http://localhost:5173');
+console.log('👉 Backend API:       http://localhost:5000');
+console.log('👉 Full App Running:  Open http://localhost:5173 in browser');
+console.log('=============================================================\n');
 
 // Start Express Backend
 const server = spawn('node', ['server/index.js'], {
@@ -17,7 +22,7 @@ const client = spawn(npmCmd, ['run', 'dev', '--prefix', 'client'], {
 });
 
 const cleanup = () => {
-  console.log('\nShutting down servers...');
+  console.log('\nShutting down StreamVault dev servers...');
   server.kill();
   client.kill();
   process.exit(0);

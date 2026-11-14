@@ -2,8 +2,23 @@ import express from 'express';
 import crypto from 'crypto';
 import path from 'path';
 import fs from 'fs';
-import { analyzeVideo, executeDownload, cancelJob, getFfmpegPath } from '../services/downloader.js';
-import { listDownloadedFiles, deleteDownloadedFile, openDownloadsFolder, getDownloadsDir } from '../services/storage.js';
+import {
+  analyzeVideo,
+  analyzePlaylist,
+  downloadSubtitle,
+  executeDownload,
+  cancelJob,
+  getFfmpegPath
+} from '../services/downloader.js';
+import {
+  listDownloadedFiles,
+  deleteDownloadedFile,
+  deleteMultipleFiles,
+  deleteAllFiles,
+  openDownloadsFolder,
+  getDownloadsDir,
+  SUBFOLDERS
+} from '../services/storage.js';
 
 const router = express.Router();
 
@@ -28,7 +43,7 @@ function notifySse(jobId, data) {
 // 1. System status check
 router.get('/system/status', (req, res) => {
   const ffmpeg = getFfmpegPath();
-  const ffmpegReady = fs.existsSync(ffmpeg) && (fs.statSync(ffmpeg).size > 10000000);
+  const ffmpegReady = fs.existsSync(ffmpeg) && (fs.statSync(ffmpeg).size > 1000000);
   
   res.json({
     ok: true,
@@ -37,11 +52,12 @@ router.get('/system/status', (req, res) => {
       path: ffmpeg,
       ready: ffmpegReady
     },
-    downloadsDir: getDownloadsDir()
+    downloadsDir: getDownloadsDir(),
+    subfolders: SUBFOLDERS
   });
 });
 
-// 2. Analyze YouTube URL
+// 2. Analyze YouTube Video URL
 router.post('/analyze', async (req, res) => {
   const { url } = req.body;
   if (!url || typeof url !== 'string') {
@@ -62,9 +78,52 @@ router.post('/analyze', async (req, res) => {
   }
 });
 
-// 3. Start download
+// 3. Analyze YouTube Playlist URL
+router.post('/playlist/analyze', async (req, res) => {
+  const { url } = req.body;
+  if (!url || typeof url !== 'string') {
+    return res.status(400).json({ error: 'A valid YouTube playlist URL is required' });
+  }
+
+  try {
+    const info = await analyzePlaylist(url.trim());
+    res.json({ ok: true, data: info });
+  } catch (err) {
+    console.error('Error analyzing playlist:', err);
+    res.status(500).json({ error: err.message || 'Failed to analyze playlist' });
+  }
+});
+
+// 4. Download Subtitle Track
+router.post('/download/subtitle', async (req, res) => {
+  const { url, languageCode, format = 'srt', title, videoId } = req.body;
+  if (!url || !languageCode) {
+    return res.status(400).json({ error: 'Video URL and languageCode are required' });
+  }
+
+  try {
+    const result = await downloadSubtitle(url, { languageCode, format, title, videoId });
+    res.json({ ok: true, data: result });
+  } catch (err) {
+    console.error('Error downloading subtitle:', err);
+    res.status(500).json({ error: err.message || 'Failed to download subtitle' });
+  }
+});
+
+// 5. Start single download (supports trimming & subfolders)
 router.post('/download', (req, res) => {
-  const { url, mode, videoItag, audioItag, audioLanguage, audioTrackId, container } = req.body;
+  const {
+    url,
+    mode,
+    videoItag,
+    audioItag,
+    audioLanguage,
+    audioTrackId,
+    container,
+    trimStart,
+    trimEnd,
+    subfolderOverride
+  } = req.body;
 
   if (!url) {
     return res.status(400).json({ error: 'URL is required' });
@@ -83,6 +142,8 @@ router.post('/download', (req, res) => {
     audioLanguage: audioLanguage || 'Default / Original',
     audioTrackId: audioTrackId || null,
     container: container || 'mp4',
+    trimStart: trimStart || null,
+    trimEnd: trimEnd || null,
     status: 'starting',
     percent: '0%',
     speed: '--',
@@ -94,7 +155,18 @@ router.post('/download', (req, res) => {
 
   jobStore.set(jobId, initialJobState);
 
-  executeDownload(jobId, { url, mode, videoItag, audioItag, audioLanguage, audioTrackId, container }, {
+  executeDownload(jobId, {
+    url,
+    mode,
+    videoItag,
+    audioItag,
+    audioLanguage,
+    audioTrackId,
+    container,
+    trimStart,
+    trimEnd,
+    subfolderOverride
+  }, {
     onProgress: (progress) => {
       const current = jobStore.get(jobId) || initialJobState;
       const updated = { ...current, ...progress, updatedAt: new Date().toISOString() };
@@ -139,7 +211,7 @@ router.post('/download', (req, res) => {
   res.json({ ok: true, jobId });
 });
 
-// 4. Polling endpoint for job status
+// 6. Polling endpoint for job status
 router.get('/download/status/:jobId', (req, res) => {
   const { jobId } = req.params;
   const job = jobStore.get(jobId);
@@ -149,7 +221,7 @@ router.get('/download/status/:jobId', (req, res) => {
   res.json({ ok: true, data: job });
 });
 
-// 5. SSE stream for real-time progress
+// 7. SSE stream for real-time progress
 router.get('/download/progress/:jobId', (req, res) => {
   const { jobId } = req.params;
   const job = jobStore.get(jobId);
@@ -179,7 +251,7 @@ router.get('/download/progress/:jobId', (req, res) => {
   });
 });
 
-// 6. Cancel download
+// 8. Cancel download
 router.post('/download/cancel/:jobId', (req, res) => {
   const { jobId } = req.params;
   const result = cancelJob(jobId);
@@ -195,13 +267,13 @@ router.post('/download/cancel/:jobId', (req, res) => {
   res.status(400).json({ error: result.error });
 });
 
-// 7. List downloaded files
+// 9. List downloaded files across all subfolders
 router.get('/files', (req, res) => {
   const files = listDownloadedFiles();
   res.json({ ok: true, data: files });
 });
 
-// 8. Delete downloaded file
+// 10. Delete single downloaded file (by relative path or name)
 router.delete('/files/:fileName', (req, res) => {
   const { fileName } = req.params;
   const result = deleteDownloadedFile(fileName);
@@ -211,21 +283,58 @@ router.delete('/files/:fileName', (req, res) => {
   res.status(404).json({ error: result.error });
 });
 
-// 9. Download file to browser
-router.get('/files/download/:fileName', (req, res) => {
-  const { fileName } = req.params;
-  const safeName = path.basename(fileName);
-  const filePath = path.join(getDownloadsDir(), safeName);
-
-  if (fs.existsSync(filePath)) {
-    return res.download(filePath, safeName);
+// 11. Delete multiple selected files
+router.post('/files/delete-multiple', (req, res) => {
+  const { files } = req.body;
+  if (!Array.isArray(files) || files.length === 0) {
+    return res.status(400).json({ error: 'files must be a non-empty array of file identifiers' });
   }
-  res.status(404).json({ error: 'File not found' });
+  const result = deleteMultipleFiles(files);
+  res.json({ ok: true, data: result });
 });
 
-// 10. Open downloads folder in Explorer
+// 12. Delete ALL downloaded files
+router.post('/files/delete-all', (req, res) => {
+  const result = deleteAllFiles();
+  res.json({ ok: true, data: result });
+});
+
+// 13. Download file to browser (supports relative path in query or route param)
+function handleFileSend(targetRelOrName, res) {
+  const cleanRelative = targetRelOrName.replace(/^[\/\\]+/, '').replace(/\.\.[\/\\]/g, '');
+  const downloadsDir = getDownloadsDir();
+  let targetPath = path.join(downloadsDir, cleanRelative);
+
+  if (!fs.existsSync(targetPath)) {
+    for (const folder of Object.values(SUBFOLDERS)) {
+      const candidate = path.join(downloadsDir, folder, path.basename(cleanRelative));
+      if (fs.existsSync(candidate)) {
+        targetPath = candidate;
+        break;
+      }
+    }
+  }
+
+  if (fs.existsSync(targetPath) && fs.statSync(targetPath).isFile()) {
+    return res.download(targetPath, path.basename(targetPath));
+  }
+  return res.status(404).json({ error: 'File not found' });
+}
+
+router.get('/files/download', (req, res) => {
+  const file = req.query.file;
+  if (!file) return res.status(400).json({ error: 'file parameter is required' });
+  return handleFileSend(file, res);
+});
+
+router.get('/files/download/:fileName', (req, res) => {
+  return handleFileSend(req.params.fileName, res);
+});
+
+// 14. Open downloads folder in File Explorer / Finder / xdg-open
 router.post('/files/open-folder', (req, res) => {
-  const result = openDownloadsFolder();
+  const { subfolder = '' } = req.body || {};
+  const result = openDownloadsFolder(subfolder);
   res.json({ ok: true, data: result });
 });
 

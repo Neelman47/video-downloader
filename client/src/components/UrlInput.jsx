@@ -1,7 +1,15 @@
 import React, { useState } from 'react';
-import { Search, Clipboard, X, Loader2, PlayCircle, Globe, Film } from 'lucide-react';
+import { Search, Clipboard, X, Loader2, PlayCircle, Globe, Film, ListVideo } from 'lucide-react';
 
-export default function UrlInput({ url, setUrl, onAnalyze, loading, error, setError }) {
+export default function UrlInput({
+  url,
+  setUrl,
+  onAnalyze,
+  onAnalyzePlaylist,
+  loading,
+  error,
+  setError
+}) {
   const [pasted, setPasted] = useState(false);
 
   const handlePaste = async () => {
@@ -22,24 +30,38 @@ export default function UrlInput({ url, setUrl, onAnalyze, loading, error, setEr
     if (setError) setError(null);
   };
 
+  const isPlaylistUrl = url.includes('list=');
+
   const handleSubmit = (e) => {
     e.preventDefault();
     if (!url.trim()) return;
-    onAnalyze(url.trim());
+    if (isPlaylistUrl && onAnalyzePlaylist) {
+      onAnalyzePlaylist(url.trim());
+    } else {
+      onAnalyze(url.trim());
+    }
   };
 
-  const loadSample = (sampleUrl) => {
+  const loadSample = (sampleUrl, isPl = false) => {
     setUrl(sampleUrl);
     if (setError) setError(null);
-    onAnalyze(sampleUrl);
+    if (isPl && onAnalyzePlaylist) {
+      onAnalyzePlaylist(sampleUrl);
+    } else {
+      onAnalyze(sampleUrl);
+    }
   };
 
   return (
-    <div className="w-full">
+    <div className="w-full space-y-2">
       <form onSubmit={handleSubmit} className="relative">
         <div className="relative flex items-center">
           <div className="absolute left-4 pointer-events-none text-slate-400">
-            <Search className="w-5 h-5" />
+            {isPlaylistUrl ? (
+              <ListVideo className="w-5 h-5 text-red-400" />
+            ) : (
+              <Search className="w-5 h-5" />
+            )}
           </div>
 
           <input
@@ -49,12 +71,12 @@ export default function UrlInput({ url, setUrl, onAnalyze, loading, error, setEr
               setUrl(e.target.value);
               if (error && setError) setError(null);
             }}
-            placeholder="Paste YouTube link here (e.g. https://www.youtube.com/watch?v=...)"
-            className="w-full pl-12 pr-32 sm:pr-40 py-4 bg-slate-900/90 border-2 border-slate-700/80 focus:border-red-500 rounded-2xl text-slate-100 placeholder-slate-500 text-sm sm:text-base transition-all outline-none shadow-2xl focus:shadow-red-500/10"
+            placeholder="Paste YouTube video or playlist link (e.g. https://www.youtube.com/watch?v=... or playlist?list=...)"
+            className="w-full pl-12 pr-44 sm:pr-56 py-4 bg-slate-900/90 border-2 border-slate-700/80 focus:border-red-500 rounded-2xl text-slate-100 placeholder-slate-500 text-sm sm:text-base transition-all outline-none shadow-2xl focus:shadow-red-500/10"
             disabled={loading}
           />
 
-          <div className="absolute right-2 flex items-center gap-1">
+          <div className="absolute right-2 flex items-center gap-1.5">
             {url && !loading && (
               <button
                 type="button"
@@ -80,7 +102,7 @@ export default function UrlInput({ url, setUrl, onAnalyze, loading, error, setEr
             <button
               type="submit"
               disabled={loading || !url.trim()}
-              className="flex items-center gap-2 px-5 py-2.5 bg-gradient-to-r from-red-600 to-rose-600 hover:from-red-500 hover:to-rose-500 disabled:opacity-50 disabled:cursor-not-allowed text-white font-semibold text-sm rounded-xl transition-all shadow-md shadow-red-600/30 active:scale-95"
+              className="flex items-center gap-2 px-4 sm:px-5 py-2.5 bg-gradient-to-r from-red-600 to-rose-600 hover:from-red-500 hover:to-rose-500 disabled:opacity-50 disabled:cursor-not-allowed text-white font-semibold text-xs sm:text-sm rounded-xl transition-all shadow-md shadow-red-600/30 active:scale-95"
             >
               {loading ? (
                 <>
@@ -89,7 +111,7 @@ export default function UrlInput({ url, setUrl, onAnalyze, loading, error, setEr
                 </>
               ) : (
                 <>
-                  <span>Analyze</span>
+                  <span>{isPlaylistUrl ? 'Analyze Playlist' : 'Analyze'}</span>
                 </>
               )}
             </button>
@@ -97,8 +119,25 @@ export default function UrlInput({ url, setUrl, onAnalyze, loading, error, setEr
         </div>
       </form>
 
+      {/* Detected Playlist Banner */}
+      {isPlaylistUrl && !loading && (
+        <div className="flex items-center justify-between p-2.5 bg-red-500/10 border border-red-500/20 rounded-xl text-xs text-red-300 animate-fadeIn">
+          <div className="flex items-center gap-2">
+            <ListVideo className="w-4 h-4 text-red-400 flex-shrink-0" />
+            <span>YouTube Playlist detected! You can download the entire playlist or analyze as single video.</span>
+          </div>
+          <button
+            type="button"
+            onClick={() => onAnalyze(url.trim())}
+            className="text-slate-300 hover:text-white underline text-[11px] font-medium"
+          >
+            Analyze single video instead
+          </button>
+        </div>
+      )}
+
       {/* Quick Test Samples */}
-      <div className="mt-3 flex flex-wrap items-center gap-2 text-xs text-slate-400">
+      <div className="flex flex-wrap items-center gap-2 text-xs text-slate-400 pt-1">
         <span className="text-slate-500 font-medium">Quick samples:</span>
         <button
           type="button"
@@ -106,7 +145,7 @@ export default function UrlInput({ url, setUrl, onAnalyze, loading, error, setEr
           className="flex items-center gap-1 px-2.5 py-1 rounded-lg bg-slate-800/60 hover:bg-slate-800 text-slate-300 hover:text-white border border-slate-700/40 transition-colors"
         >
           <Film className="w-3 h-3 text-red-400" />
-          <span>4K Demo (Big Buck Bunny)</span>
+          <span>4K Demo</span>
         </button>
         <button
           type="button"
@@ -114,13 +153,21 @@ export default function UrlInput({ url, setUrl, onAnalyze, loading, error, setEr
           className="flex items-center gap-1 px-2.5 py-1 rounded-lg bg-slate-800/60 hover:bg-slate-800 text-slate-300 hover:text-white border border-slate-700/40 transition-colors"
         >
           <Globe className="w-3 h-3 text-sky-400" />
-          <span>Multi-Language Audio (MrBeast)</span>
+          <span>Multi-Lang & Subtitles (MrBeast)</span>
+        </button>
+        <button
+          type="button"
+          onClick={() => loadSample('https://www.youtube.com/playlist?list=PLrAXtmErZgOdP_8GztsuKi9nrraNbKKp4', true)}
+          className="flex items-center gap-1 px-2.5 py-1 rounded-lg bg-slate-800/60 hover:bg-slate-800 text-slate-300 hover:text-white border border-slate-700/40 transition-colors"
+        >
+          <ListVideo className="w-3 h-3 text-amber-400" />
+          <span>Sample Playlist (Lex Fridman)</span>
         </button>
       </div>
 
       {/* Error Alert */}
       {error && (
-        <div className="mt-4 p-4 rounded-xl bg-red-500/10 border border-red-500/20 text-red-400 text-sm flex items-start gap-3">
+        <div className="p-4 rounded-xl bg-red-500/10 border border-red-500/20 text-red-400 text-sm flex items-start gap-3">
           <div className="w-2 h-2 rounded-full bg-red-400 mt-1.5 flex-shrink-0"></div>
           <div className="flex-1">
             <p className="font-semibold text-red-300">Analysis Error</p>

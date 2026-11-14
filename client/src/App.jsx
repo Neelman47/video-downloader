@@ -5,11 +5,13 @@ import VideoCard from './components/VideoCard.jsx';
 import FormatSelector from './components/FormatSelector.jsx';
 import DownloadProgress from './components/DownloadProgress.jsx';
 import DownloadedList from './components/DownloadedList.jsx';
-import { Sparkles, Play, CheckCircle2 } from 'lucide-react';
+import PlaylistView from './components/PlaylistView.jsx';
+import { Sparkles, Film } from 'lucide-react';
 
 export default function App() {
   const [url, setUrl] = useState('');
   const [videoInfo, setVideoInfo] = useState(null);
+  const [playlistInfo, setPlaylistInfo] = useState(null);
   const [analyzing, setAnalyzing] = useState(false);
   const [analysisError, setAnalysisError] = useState(null);
 
@@ -54,11 +56,12 @@ export default function App() {
     }
   };
 
-  // 1. Analyze video URL
+  // 1. Analyze single video URL
   const handleAnalyze = async (targetUrl) => {
     setAnalyzing(true);
     setAnalysisError(null);
     setVideoInfo(null);
+    setPlaylistInfo(null);
 
     try {
       const res = await fetch('/api/analyze', {
@@ -81,7 +84,35 @@ export default function App() {
     }
   };
 
-  // 2. Start download
+  // 2. Analyze playlist URL
+  const handleAnalyzePlaylist = async (targetUrl) => {
+    setAnalyzing(true);
+    setAnalysisError(null);
+    setVideoInfo(null);
+    setPlaylistInfo(null);
+
+    try {
+      const res = await fetch('/api/playlist/analyze', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url: targetUrl })
+      });
+
+      const data = await res.json();
+      if (!res.ok || !data.ok) {
+        throw new Error(data.error || 'Failed to analyze playlist');
+      }
+
+      setPlaylistInfo(data.data);
+    } catch (err) {
+      console.error('Playlist analyze error:', err);
+      setAnalysisError(err.message);
+    } finally {
+      setAnalyzing(false);
+    }
+  };
+
+  // 3. Start single video download
   const handleDownload = async (options) => {
     cleanupProgressTracking();
 
@@ -153,7 +184,6 @@ export default function App() {
       };
 
       eventSource.onerror = () => {
-        // Fallback to polling if SSE encounters an issue
         console.warn('SSE disconnected, falling back to polling');
         eventSource.close();
         sseRef.current = null;
@@ -187,7 +217,7 @@ export default function App() {
     }, 1000);
   };
 
-  // 3. Cancel download
+  // 4. Cancel download
   const handleCancelDownload = async (jobId) => {
     try {
       await fetch(`/api/download/cancel/${jobId}`, { method: 'POST' });
@@ -198,20 +228,24 @@ export default function App() {
     }
   };
 
-  // 4. Open downloads folder in Windows Explorer
-  const handleOpenFolder = async () => {
+  // 5. Open downloads folder (or specific subfolder)
+  const handleOpenFolder = async (subfolder = '') => {
     try {
-      await fetch('/api/files/open-folder', { method: 'POST' });
+      await fetch('/api/files/open-folder', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ subfolder })
+      });
     } catch (err) {
       console.error('Failed to open folder:', err);
     }
   };
 
-  // 5. Delete file
-  const handleDeleteFile = async (fileName) => {
-    if (!window.confirm(`Are you sure you want to delete "${fileName}"?`)) return;
+  // 6. Delete single file
+  const handleDeleteFile = async (targetIdentifier) => {
+    if (!window.confirm(`Are you sure you want to delete "${targetIdentifier}"?`)) return;
     try {
-      const res = await fetch(`/api/files/${encodeURIComponent(fileName)}`, { method: 'DELETE' });
+      const res = await fetch(`/api/files/${encodeURIComponent(targetIdentifier)}`, { method: 'DELETE' });
       const data = await res.json();
       if (data.ok) {
         fetchDownloadedFiles();
@@ -221,9 +255,39 @@ export default function App() {
     }
   };
 
-  // 6. Direct browser download of saved file
-  const handleDownloadFile = (fileName) => {
-    window.location.href = `/api/files/download/${encodeURIComponent(fileName)}`;
+  // 7. Delete multiple selected files
+  const handleDeleteMultiple = async (filesList) => {
+    try {
+      const res = await fetch('/api/files/delete-multiple', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ files: filesList })
+      });
+      const data = await res.json();
+      if (data.ok) {
+        fetchDownloadedFiles();
+      }
+    } catch (err) {
+      console.error('Failed to delete files:', err);
+    }
+  };
+
+  // 8. Delete ALL files
+  const handleDeleteAll = async () => {
+    try {
+      const res = await fetch('/api/files/delete-all', { method: 'POST' });
+      const data = await res.json();
+      if (data.ok) {
+        fetchDownloadedFiles();
+      }
+    } catch (err) {
+      console.error('Failed to delete all files:', err);
+    }
+  };
+
+  // 9. Direct browser download of saved file
+  const handleDownloadFile = (targetFile) => {
+    window.location.href = `/api/files/download?file=${encodeURIComponent(targetFile)}`;
   };
 
   return (
@@ -233,7 +297,7 @@ export default function App() {
 
       {/* Top Navigation */}
       <Navbar
-        onOpenFolder={handleOpenFolder}
+        onOpenFolder={() => handleOpenFolder('')}
         downloadCount={downloadedFiles.length}
       />
 
@@ -243,42 +307,53 @@ export default function App() {
         <div className="text-center space-y-3">
           <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full text-xs font-semibold bg-red-500/10 text-red-400 border border-red-500/20 mb-1">
             <Sparkles className="w-3.5 h-3.5" />
-            <span>Select Video Quality, Multi-Language Audio & Mode</span>
+            <span>4K Video • Multi-Language Audio • Clips • Subtitles • Playlists</span>
           </div>
 
           <h1 className="text-3xl sm:text-5xl font-extrabold tracking-tight">
-            Download YouTube Videos <br />
+            Download YouTube Media <br />
             <span className="bg-gradient-to-r from-red-500 via-rose-400 to-amber-300 bg-clip-text text-transparent">
               In Any Quality & Language
             </span>
           </h1>
 
           <p className="text-sm sm:text-base text-slate-400 max-w-2xl mx-auto">
-            Analyze any YouTube video, choose your preferred video resolution (up to 4K), 
-            select from all available audio languages, and download video, audio, or both.
+            Analyze any YouTube video or playlist, select video resolution (up to 4K), 
+            choose dubbed audio languages, download subtitles, or clip specific segments.
           </p>
         </div>
 
-        {/* URL Input Box */}
+        {/* URL Input Box (Supports both Videos and Playlists) */}
         <UrlInput
           url={url}
           setUrl={setUrl}
           onAnalyze={handleAnalyze}
+          onAnalyzePlaylist={handleAnalyzePlaylist}
           loading={analyzing}
           error={analysisError}
           setError={setAnalysisError}
         />
 
-        {/* Video Preview Card */}
-        {videoInfo && (
+        {/* Playlist View Card */}
+        {playlistInfo && (
+          <PlaylistView
+            playlist={playlistInfo}
+            onClose={() => setPlaylistInfo(null)}
+            onBatchDownloadComplete={fetchDownloadedFiles}
+            onOpenFolder={() => handleOpenFolder('playlists')}
+          />
+        )}
+
+        {/* Video Preview Card & Format Selector */}
+        {videoInfo && !playlistInfo && (
           <div className="animate-fadeIn space-y-6">
             <VideoCard video={videoInfo} />
 
-            {/* Customizer / Quality & Audio Language Selector */}
             <FormatSelector
               video={videoInfo}
               onDownload={handleDownload}
               downloading={currentJob && ['starting', 'downloading', 'merging'].includes(currentJob.status)}
+              onSubtitleDownloaded={fetchDownloadedFiles}
             />
           </div>
         )}
@@ -289,7 +364,7 @@ export default function App() {
             <DownloadProgress
               job={currentJob}
               onCancel={handleCancelDownload}
-              onOpenFolder={handleOpenFolder}
+              onOpenFolder={() => handleOpenFolder('')}
               onDownloadFile={handleDownloadFile}
             />
           </div>
@@ -301,6 +376,8 @@ export default function App() {
             files={downloadedFiles}
             onRefresh={fetchDownloadedFiles}
             onDelete={handleDeleteFile}
+            onDeleteMultiple={handleDeleteMultiple}
+            onDeleteAll={handleDeleteAll}
             onDownloadFile={handleDownloadFile}
             onOpenFolder={handleOpenFolder}
             loading={loadingFiles}
