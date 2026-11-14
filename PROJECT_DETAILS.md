@@ -58,13 +58,23 @@ StreamVault is structured into three dedicated header tabs:
 
 ### 3. Tab 3: Merge (`/merge` or `#/merge`)
 - Dedicated tool to merge video, audio, and subtitles into a single unified file.
-- **Three Input Slots**:
+- **Flexible Input Configuration**:
   1. **Video File (Required)**: Select from downloaded library (`videos/`, `clips/`, `playlists/`) or upload from computer.
-  2. **Audio File (Required)**: Select from downloaded library (`audio/`) or upload from computer.
-  3. **Subtitle File (Optional)**: Select from downloaded library (`subtitles/`) or upload from computer.
+  2. **Audio Track (Optional)**: Select from downloaded library (`audio/`), upload from computer, or choose **None** with options to **Keep original video audio** or **Mute**.
+  3. **Subtitle File (Optional)**: Select from downloaded library (`subtitles/`), upload from computer (.srt, .vtt, .ass), or choose **None**.
+  - *Validation Rule*: Video is required, and at least **one** of Audio or Subtitles must be selected (supports `Video + Audio`, `Video + Subtitles`, or `Video + Audio + Subtitles`).
 - **Subtitle Modes**:
   - **Soft Subtitles**: Embedded as a selectable track in the MP4/MKV container (`-c:s mov_text` for MP4, `-c:s srt` for MKV).
-  - **Burn-in Subtitles**: Rendered directly onto video frames using FFmpeg subtitle filter.
+  - **Burn-in Subtitles**: Permanently hardcoded onto video frames using FFmpeg's `subtitles` filter with custom styling.
+- **Subtitle Styling Studio & 16:9 Cinema Live Preview**:
+  - **Font Family**: Arial, Roboto, Trebuchet MS, Impact, Segoe UI, Verdana, Courier New, Georgia.
+  - **Font Size**: 18pt, 22pt, 26pt, 32pt.
+  - **Text Color**: Preset swatches (White `#FFFFFF`, Yellow `#FFE600`, Cyan `#00E5FF`, Green `#00FF66`, Orange `#FF9900`) + custom color picker.
+  - **Background Box & Contrast**: Netflix/YouTube semi-transparent box (`BorderStyle=3`), Solid black box, Outline & drop shadow (`BorderStyle=1`), Thick outline.
+  - **Box Opacity / Outline Thickness**: 20% to 100% opacity slider or 1px to 4px outline selector.
+  - **Bottom Frame Distance**: Low (10px), Standard (25px), Raised (45px).
+  - **Formatting**: Bold (`B`) and Italic (`I`) toggles.
+  - **Real-Time 16:9 Cinema Preview**: Interactive simulation reflecting font, color, background box, and bottom margin in real time.
 - **Output Container**: `.mp4` or `.mkv`.
 - **Output Destination**: Automatically exported to `downloads/merged_items/` with timestamp prefix (`YYYYMMDD_HHMM_`).
 

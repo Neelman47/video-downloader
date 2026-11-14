@@ -34,12 +34,20 @@ StreamVault provides three dedicated top-level tabs:
 - **Batch Actions**: Multi-select checkboxes, "Select All", "Delete Selected", and "Delete All".
 - **One-Click Explorer**: Open the active subfolder directly in File Explorer (Windows), Finder (macOS), or xdg-open (Linux).
 
-### 3. 🔀 Merge (Media Merger Engine)
-- Combine two or three inputs into a single container:
+### 3. 🔀 Merge (Media Merger Engine & Subtitle Styling Studio)
+- Combine custom media inputs into a single container:
   1. **Video File (Required)**: From downloaded library or uploaded from computer.
-  2. **Audio File (Required)**: From downloaded library or uploaded from computer.
-  3. **Subtitle File (Optional)**: From downloaded library or uploaded from computer.
-- **Subtitle Modes**: Soft (selectable embedded track) or Burn-in (rendered directly onto video).
+  2. **Audio Track (Optional)**: From downloaded library, uploaded from computer, or **None** with toggle to keep original video audio or mute.
+  3. **Subtitle File (Optional)**: From downloaded library or uploaded from computer (.srt, .vtt, .ass).
+  - *Flexibility*: Video is required, plus at least one of Audio or Subtitles (`Video + Audio`, `Video + Subtitles`, or `Video + Audio + Subtitles`).
+- **Subtitle Modes**:
+  - **Soft**: Selectable embedded track in MP4/MKV.
+  - **Burn-in Directly**: Hardcoded directly onto the video frames.
+- **Subtitle Styling Studio**:
+  - Customize font family (Arial, Roboto, Impact, Trebuchet MS, etc.), font size (18pt–32pt), and text color with quick swatches and custom picker.
+  - Choose background box style (Netflix/YouTube semi-transparent dark box, solid black box, or outline & drop shadow) with opacity slider.
+  - Adjust bottom frame margin distance (10px, 25px, 45px), bold, and italics.
+  - **Live 16:9 Cinema Preview Box**: Instant visual simulation showing the exact subtitle appearance and placement before rendering.
 - **Output Container**: `.mp4` or `.mkv`.
 - **Destination**: Exported into `downloads/merged_items/` with timestamp prefixes (`YYYYMMDD_HHMM_`).
 

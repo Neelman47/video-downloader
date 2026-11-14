@@ -301,16 +301,27 @@ router.post('/merge', upload.fields([
 ]), (req, res) => {
   const uploadedFiles = req.files || {};
   const videoPath = uploadedFiles.videoFile?.[0]?.path || req.body.videoPath;
-  const audioPath = uploadedFiles.audioFile?.[0]?.path || req.body.audioPath;
-  const subtitlePath = uploadedFiles.subtitleFile?.[0]?.path || req.body.subtitlePath;
+  const audioPath = uploadedFiles.audioFile?.[0]?.path || req.body.audioPath || null;
+  const subtitlePath = uploadedFiles.subtitleFile?.[0]?.path || req.body.subtitlePath || null;
 
   const { outputName, container = 'mp4', subtitleMode = 'soft' } = req.body;
+
+  let subtitleStyle = {};
+  try {
+    subtitleStyle = typeof req.body.subtitleStyle === 'string'
+      ? JSON.parse(req.body.subtitleStyle)
+      : (req.body.subtitleStyle || {});
+  } catch (e) {
+    subtitleStyle = {};
+  }
+
+  const keepOriginalAudio = req.body.keepOriginalAudio === 'true' || req.body.keepOriginalAudio === true || req.body.keepOriginalAudio === undefined;
 
   if (!videoPath) {
     return res.status(400).json({ error: 'Video file input is required' });
   }
-  if (!audioPath) {
-    return res.status(400).json({ error: 'Audio file input is required' });
+  if (!audioPath && !subtitlePath) {
+    return res.status(400).json({ error: 'Please select at least an Audio track or a Subtitle file to merge with the video' });
   }
 
   const jobId = crypto.randomUUID();
@@ -320,9 +331,11 @@ router.post('/merge', upload.fields([
     videoPath,
     audioPath,
     subtitlePath: subtitlePath || null,
+    keepOriginalAudio,
     outputName: outputName || '',
     container,
     subtitleMode,
+    subtitleStyle,
     status: 'starting',
     percent: '10%',
     message: 'Initializing media merge...',
@@ -350,9 +363,11 @@ router.post('/merge', upload.fields([
     videoPath,
     audioPath,
     subtitlePath,
+    keepOriginalAudio,
     outputName,
     container,
-    subtitleMode
+    subtitleMode,
+    subtitleStyle
   }, {
     onProgress: (progress) => {
       const current = jobStore.get(jobId) || initialJobState;
