@@ -1,7 +1,7 @@
 import React from 'react';
-import { Loader2, CheckCircle2, AlertTriangle, XCircle, FolderOpen, ArrowDownCircle, ShieldCheck } from 'lucide-react';
+import { Loader2, CheckCircle2, AlertTriangle, XCircle, FolderOpen, ArrowDownCircle, ShieldCheck, X } from 'lucide-react';
 
-export default function DownloadProgress({ job, onCancel, onOpenFolder, onDownloadFile }) {
+export default function DownloadProgress({ job, onCancel, onOpenFolder, onDownloadFile, onClose }) {
   if (!job) return null;
 
   const isCompleted = job.status === 'completed';
@@ -13,7 +13,7 @@ export default function DownloadProgress({ job, onCancel, onOpenFolder, onDownlo
   const percentNumber = parseInt(job.percent) || (isCompleted ? 100 : 5);
 
   return (
-    <div className="glass-panel rounded-2xl p-5 border border-slate-800 shadow-2xl relative overflow-hidden">
+    <div className="glass-panel rounded-2xl p-5 border border-slate-800 shadow-2xl relative overflow-hidden animate-fadeIn">
       {/* Top Status Banner */}
       <div className="flex items-center justify-between pb-3 border-b border-slate-800/80">
         <div className="flex items-center gap-2.5">
@@ -37,16 +37,31 @@ export default function DownloadProgress({ job, onCancel, onOpenFolder, onDownlo
           </div>
         </div>
 
-        {/* Cancel button if active */}
-        {!isCompleted && !isError && !isCancelled && (
-          <button
-            type="button"
-            onClick={() => onCancel(job.jobId)}
-            className="px-2.5 py-1 text-xs font-semibold text-slate-400 hover:text-red-400 hover:bg-red-500/10 rounded-lg transition-colors border border-slate-800"
-          >
-            Cancel
-          </button>
-        )}
+        <div className="flex items-center gap-2">
+          {/* Cancel button if active */}
+          {!isCompleted && !isError && !isCancelled && (
+            <button
+              type="button"
+              onClick={() => onCancel(job.jobId)}
+              className="px-2.5 py-1 text-xs font-semibold text-slate-400 hover:text-red-400 hover:bg-red-500/10 rounded-lg transition-colors border border-slate-800"
+            >
+              Cancel
+            </button>
+          )}
+
+          {/* Close icon button when completed or terminated */}
+          {(isCompleted || isError || isCancelled) && onClose && (
+            <button
+              type="button"
+              onClick={onClose}
+              title="Close notification"
+              aria-label="Close"
+              className="p-1.5 text-slate-400 hover:text-white hover:bg-slate-800 rounded-xl transition-all border border-slate-800 hover:border-slate-700"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          )}
+        </div>
       </div>
 
       {/* Progress Bar */}
@@ -103,14 +118,36 @@ export default function DownloadProgress({ job, onCancel, onOpenFolder, onDownlo
                 <span>Save to Browser</span>
               </button>
             )}
+
+            {onClose && (
+              <button
+                type="button"
+                onClick={onClose}
+                title="Close download completed card"
+                className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-slate-400 hover:text-white bg-slate-800/80 hover:bg-slate-800 rounded-xl border border-slate-700/60 transition-colors"
+              >
+                <X className="w-3.5 h-3.5" />
+                <span>Close</span>
+              </button>
+            )}
           </div>
         </div>
       )}
 
-      {/* When error, show error detail */}
+      {/* When error, show error detail with close button */}
       {isError && (
-        <div className="mt-3 p-3 rounded-xl bg-red-500/10 border border-red-500/20 text-xs text-red-400">
-          {job.error || 'An unexpected error occurred during download.'}
+        <div className="mt-3 p-3 rounded-xl bg-red-500/10 border border-red-500/20 text-xs text-red-400 flex items-center justify-between gap-2">
+          <span>{job.error || 'An unexpected error occurred during download.'}</span>
+          {onClose && (
+            <button
+              type="button"
+              onClick={onClose}
+              className="text-red-400 hover:text-white p-1 rounded-lg hover:bg-red-500/20 transition-colors"
+              title="Dismiss"
+            >
+              <X className="w-3.5 h-3.5" />
+            </button>
+          )}
         </div>
       )}
     </div>

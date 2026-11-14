@@ -405,6 +405,7 @@ export default function App() {
                   onCancel={handleCancelDownload}
                   onOpenFolder={() => handleOpenFolder('')}
                   onDownloadFile={handleDownloadFile}
+                  onClose={() => setCurrentJob(null)}
                 />
               </div>
             )}
