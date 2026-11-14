@@ -22,9 +22,16 @@ StreamVault is structured into three dedicated header tabs:
 ### 1. Tab 1: Downloader (`/` or `#/`)
 - Dedicated to YouTube video and playlist analysis and downloading.
 - In-depth format dashboard: quality selector (144p to 4K 60fps), dub audio selector, subtitle options, and video clipping/trimming.
+- **Video Metadata & SEO Insights Section**:
+  - **Video Tags (SEO Keywords)** with one-click "Copy All Tags".
+  - **Video Hashtags** extracted from title and description with "Copy Hashtags".
+  - **Category**: Video category (e.g., Entertainment, Film & Animation, Gaming, Music).
+  - **Channel Details**: Creator name, verified status badge, avatar, subscriber count, and direct link.
+  - **High-Res Thumbnail**: High-resolution image preview with one-click "Download Thumbnail (HD)".
+  - **Captions & Subtitles**: Complete track listing with direct `.SRT` and `.VTT` download buttons.
+  - **Full Description**: Collapsible description viewer with link detection.
 - Playlist detection and batch queue execution.
 - Live real-time download progress bar.
-- Clean and focused layout with no bottom clutter.
 
 ### 2. Tab 2: Browse (`/browse` or `#/browse`)
 - Dedicated Media Library for all downloaded and merged media.

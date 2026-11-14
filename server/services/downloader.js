@@ -272,6 +272,40 @@ export async function analyzeVideo(url) {
     url: c.url
   }));
 
+  // 4. Extract Hashtags from title and description
+  const fullDesc = videoDetails.description || '';
+  const fullTitle = videoDetails.title || '';
+  const rawHashtags = [
+    ...(fullTitle.match(/#[^\s#]+/gi) || []),
+    ...(fullDesc.match(/#[^\s#]+/gi) || [])
+  ];
+  const hashtags = Array.from(new Set(rawHashtags));
+
+  // 5. SEO Tags / Keywords
+  const keywords = Array.isArray(videoDetails.keywords) ? videoDetails.keywords : [];
+
+  // 6. Channel & Author Information
+  const author = {
+    name: videoDetails.author?.name || 'Unknown Channel',
+    channelUrl: videoDetails.author?.channel_url || videoDetails.author?.url || (videoDetails.author?.id ? `https://www.youtube.com/channel/${videoDetails.author.id}` : null),
+    id: videoDetails.author?.id || null,
+    verified: Boolean(videoDetails.author?.verified),
+    subscriberCount: videoDetails.author?.subscriberCount || videoDetails.author?.subscriber_count || null,
+    subscriberCountFormatted: videoDetails.author?.subscriberCount
+      ? new Intl.NumberFormat('en', { notation: 'compact' }).format(videoDetails.author.subscriberCount)
+      : null,
+    avatar: videoDetails.author?.thumbnails?.[videoDetails.author.thumbnails.length - 1]?.url || null
+  };
+
+  // 7. Thumbnail resolutions
+  const allThumbnails = (videoDetails.thumbnails || []).map(t => ({
+    url: t.url,
+    width: t.width,
+    height: t.height,
+    label: t.width >= 1280 ? 'HD (1280x720)' : t.width >= 640 ? 'Medium (640x480)' : `${t.width}x${t.height}`
+  }));
+  const maxThumbnail = videoDetails.thumbnails?.[videoDetails.thumbnails.length - 1]?.url || null;
+
   const actualId = videoDetails.id || videoDetails.videoId || (url.match(/(?:v=|youtu\.be\/)([\w-]{11})/)?.[1]) || '';
   const actualUrl = videoDetails.url || (actualId ? `https://www.youtube.com/watch?v=${actualId}` : url);
 
@@ -279,12 +313,18 @@ export async function analyzeVideo(url) {
     id: actualId,
     webpageUrl: actualUrl,
     title: videoDetails.title,
-    description: (videoDetails.description || '').slice(0, 300),
-    thumbnail: videoDetails.thumbnails?.[videoDetails.thumbnails.length - 1]?.url || null,
+    description: fullDesc,
+    shortDescription: fullDesc.slice(0, 300),
+    thumbnail: maxThumbnail,
+    thumbnails: allThumbnails,
     duration: parseInt(videoDetails.lengthSeconds) || 0,
     durationFormatted: formatDuration(videoDetails.lengthSeconds),
-    channel: videoDetails.author?.name || 'Unknown Channel',
-    channelUrl: videoDetails.author?.channel_url || null,
+    channel: author.name,
+    channelUrl: author.channelUrl,
+    author,
+    category: videoDetails.category || 'General',
+    keywords,
+    hashtags,
     viewCount: parseInt(videoDetails.viewCount) || 0,
     viewCountFormatted: videoDetails.viewCount ? new Intl.NumberFormat('en', { notation: 'compact' }).format(videoDetails.viewCount) : '0',
     uploadDate: videoDetails.uploadDate || '',

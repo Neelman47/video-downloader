@@ -7,6 +7,7 @@ import DownloadProgress from './components/DownloadProgress.jsx';
 import DownloadedList from './components/DownloadedList.jsx';
 import PlaylistView from './components/PlaylistView.jsx';
 import MergeView from './components/MergeView.jsx';
+import VideoMetadataCard from './components/VideoMetadataCard.jsx';
 import { Sparkles } from 'lucide-react';
 
 export default function App() {
@@ -376,10 +377,16 @@ export default function App() {
               />
             )}
 
-            {/* Video Preview Card & Format Selector */}
+            {/* Video Preview Card, Format Selector & Metadata Insights */}
             {videoInfo && !playlistInfo && (
               <div className="animate-fadeIn space-y-6">
                 <VideoCard video={videoInfo} />
+
+                {/* Video Details, Tags, Hashtags, Channel & Captions */}
+                <VideoMetadataCard
+                  video={videoInfo}
+                  onSubtitleDownloaded={fetchDownloadedFiles}
+                />
 
                 <FormatSelector
                   video={videoInfo}

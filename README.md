@@ -14,6 +14,14 @@ StreamVault provides three dedicated top-level tabs:
 - Paste any YouTube video or playlist link (`list=...`).
 - Choose from **144p up to 4K 60fps** with container, codec, and bitrate indicators.
 - Detects and lists **all available multi-language audio dub tracks**.
+- **Video Metadata & SEO Insights**:
+  - Video tags (SEO keywords) with one-click **Copy All Tags**.
+  - Video hashtags with one-click **Copy Hashtags**.
+  - Video category, publication date, and view count.
+  - Channel name, avatar, subscriber count, and verified badge.
+  - High-res thumbnail preview with **Download Thumbnail (HD)** button.
+  - Complete list of captions with instant **.SRT** and **.VTT** download options.
+  - Full expandable description viewer.
 - **Video Trimming**: Interactive start and end time sliders with live clip duration calculation.
 - **Subtitles**: Download `.srt` or `.vtt` subtitles for any available language.
 - **Playlists**: Full video checklist, batch selection, and sequential queue execution.
