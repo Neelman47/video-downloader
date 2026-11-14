@@ -6,9 +6,17 @@ import FormatSelector from './components/FormatSelector.jsx';
 import DownloadProgress from './components/DownloadProgress.jsx';
 import DownloadedList from './components/DownloadedList.jsx';
 import PlaylistView from './components/PlaylistView.jsx';
-import { Sparkles, Film } from 'lucide-react';
+import MergeView from './components/MergeView.jsx';
+import { Sparkles } from 'lucide-react';
 
 export default function App() {
+  // Navigation: 'downloader' | 'browse' | 'merge'
+  const [activeTab, setActiveTab] = useState(() => {
+    const hash = window.location.hash.replace('#/', '').replace('#', '');
+    if (['browse', 'merge'].includes(hash)) return hash;
+    return 'downloader';
+  });
+
   const [url, setUrl] = useState('');
   const [videoInfo, setVideoInfo] = useState(null);
   const [playlistInfo, setPlaylistInfo] = useState(null);
@@ -21,6 +29,25 @@ export default function App() {
 
   const sseRef = useRef(null);
   const pollingRef = useRef(null);
+
+  // Sync tab with URL hash
+  const handleTabChange = (newTab) => {
+    setActiveTab(newTab);
+    window.location.hash = newTab === 'downloader' ? '/' : `/${newTab}`;
+  };
+
+  useEffect(() => {
+    const onHashChange = () => {
+      const hash = window.location.hash.replace('#/', '').replace('#', '');
+      if (['downloader', 'browse', 'merge'].includes(hash)) {
+        setActiveTab(hash);
+      } else if (!hash) {
+        setActiveTab('downloader');
+      }
+    };
+    window.addEventListener('hashchange', onHashChange);
+    return () => window.removeEventListener('hashchange', onHashChange);
+  }, []);
 
   // Load existing downloaded files on mount
   useEffect(() => {
@@ -144,12 +171,10 @@ export default function App() {
         message: 'Initializing download stream...'
       });
 
-      // Scroll smoothly down to progress indicator
       setTimeout(() => {
         document.getElementById('progress-section')?.scrollIntoView({ behavior: 'smooth' });
       }, 100);
 
-      // Start SSE for live real-time progress updates
       setupProgressStream(jobId);
 
     } catch (err) {
@@ -295,100 +320,127 @@ export default function App() {
       {/* Background radial glow effect */}
       <div className="absolute top-0 left-1/2 -translate-x-1/2 w-[800px] h-[350px] bg-gradient-to-b from-red-600/15 via-rose-600/5 to-transparent blur-3xl pointer-events-none -z-10" />
 
-      {/* Top Navigation */}
+      {/* Top Navigation with Tabs */}
       <Navbar
-        onOpenFolder={() => handleOpenFolder('')}
+        activeTab={activeTab}
+        onTabChange={handleTabChange}
+        onOpenFolder={handleOpenFolder}
         downloadCount={downloadedFiles.length}
       />
 
-      {/* Main Content */}
-      <main className="flex-1 max-w-5xl w-full mx-auto px-4 py-8 sm:py-12 flex flex-col gap-8">
-        {/* Hero Header */}
-        <div className="text-center space-y-3">
-          <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full text-xs font-semibold bg-red-500/10 text-red-400 border border-red-500/20 mb-1">
-            <Sparkles className="w-3.5 h-3.5" />
-            <span>4K Video • Multi-Language Audio • Clips • Subtitles • Playlists</span>
+      {/* Main Content Pane */}
+      <main className="flex-1 max-w-5xl w-full mx-auto px-4 py-8 sm:py-10 flex flex-col gap-8">
+        {/* ========================================================= */}
+        {/* TAB 1: DOWNLOADER (Main Screen)                           */}
+        {/* ========================================================= */}
+        {activeTab === 'downloader' && (
+          <div className="space-y-8 animate-fadeIn">
+            {/* Hero Header */}
+            <div className="text-center space-y-3">
+              <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full text-xs font-semibold bg-red-500/10 text-red-400 border border-red-500/20 mb-1">
+                <Sparkles className="w-3.5 h-3.5" />
+                <span>4K Video • Multi-Language Audio • Clips • Subtitles • Playlists</span>
+              </div>
+
+              <h1 className="text-3xl sm:text-5xl font-extrabold tracking-tight">
+                Download YouTube Media <br />
+                <span className="bg-gradient-to-r from-red-500 via-rose-400 to-amber-300 bg-clip-text text-transparent">
+                  In Any Quality & Language
+                </span>
+              </h1>
+
+              <p className="text-sm sm:text-base text-slate-400 max-w-2xl mx-auto">
+                Analyze any YouTube video or playlist, select video resolution (up to 4K), 
+                choose dubbed audio languages, download subtitles, or clip specific segments.
+              </p>
+            </div>
+
+            {/* URL Input Box */}
+            <UrlInput
+              url={url}
+              setUrl={setUrl}
+              onAnalyze={handleAnalyze}
+              onAnalyzePlaylist={handleAnalyzePlaylist}
+              loading={analyzing}
+              error={analysisError}
+              setError={setAnalysisError}
+            />
+
+            {/* Playlist View Card */}
+            {playlistInfo && (
+              <PlaylistView
+                playlist={playlistInfo}
+                onClose={() => setPlaylistInfo(null)}
+                onBatchDownloadComplete={fetchDownloadedFiles}
+                onOpenFolder={() => handleOpenFolder('playlists')}
+              />
+            )}
+
+            {/* Video Preview Card & Format Selector */}
+            {videoInfo && !playlistInfo && (
+              <div className="animate-fadeIn space-y-6">
+                <VideoCard video={videoInfo} />
+
+                <FormatSelector
+                  video={videoInfo}
+                  onDownload={handleDownload}
+                  downloading={currentJob && ['starting', 'downloading', 'merging'].includes(currentJob.status)}
+                  onSubtitleDownloaded={fetchDownloadedFiles}
+                />
+              </div>
+            )}
+
+            {/* Live Download Progress Card */}
+            {currentJob && (
+              <div id="progress-section" className="animate-fadeIn">
+                <DownloadProgress
+                  job={currentJob}
+                  onCancel={handleCancelDownload}
+                  onOpenFolder={() => handleOpenFolder('')}
+                  onDownloadFile={handleDownloadFile}
+                />
+              </div>
+            )}
           </div>
-
-          <h1 className="text-3xl sm:text-5xl font-extrabold tracking-tight">
-            Download YouTube Media <br />
-            <span className="bg-gradient-to-r from-red-500 via-rose-400 to-amber-300 bg-clip-text text-transparent">
-              In Any Quality & Language
-            </span>
-          </h1>
-
-          <p className="text-sm sm:text-base text-slate-400 max-w-2xl mx-auto">
-            Analyze any YouTube video or playlist, select video resolution (up to 4K), 
-            choose dubbed audio languages, download subtitles, or clip specific segments.
-          </p>
-        </div>
-
-        {/* URL Input Box (Supports both Videos and Playlists) */}
-        <UrlInput
-          url={url}
-          setUrl={setUrl}
-          onAnalyze={handleAnalyze}
-          onAnalyzePlaylist={handleAnalyzePlaylist}
-          loading={analyzing}
-          error={analysisError}
-          setError={setAnalysisError}
-        />
-
-        {/* Playlist View Card */}
-        {playlistInfo && (
-          <PlaylistView
-            playlist={playlistInfo}
-            onClose={() => setPlaylistInfo(null)}
-            onBatchDownloadComplete={fetchDownloadedFiles}
-            onOpenFolder={() => handleOpenFolder('playlists')}
-          />
         )}
 
-        {/* Video Preview Card & Format Selector */}
-        {videoInfo && !playlistInfo && (
-          <div className="animate-fadeIn space-y-6">
-            <VideoCard video={videoInfo} />
-
-            <FormatSelector
-              video={videoInfo}
-              onDownload={handleDownload}
-              downloading={currentJob && ['starting', 'downloading', 'merging'].includes(currentJob.status)}
-              onSubtitleDownloaded={fetchDownloadedFiles}
+        {/* ========================================================= */}
+        {/* TAB 2: BROWSE (Dedicated Media Library with Date Filters)   */}
+        {/* ========================================================= */}
+        {activeTab === 'browse' && (
+          <div className="animate-fadeIn">
+            <DownloadedList
+              files={downloadedFiles}
+              onRefresh={fetchDownloadedFiles}
+              onDelete={handleDeleteFile}
+              onDeleteMultiple={handleDeleteMultiple}
+              onDeleteAll={handleDeleteAll}
+              onDownloadFile={handleDownloadFile}
+              onOpenFolder={handleOpenFolder}
+              loading={loadingFiles}
             />
           </div>
         )}
 
-        {/* Live Download Progress Card */}
-        {currentJob && (
-          <div id="progress-section" className="animate-fadeIn">
-            <DownloadProgress
-              job={currentJob}
-              onCancel={handleCancelDownload}
-              onOpenFolder={() => handleOpenFolder('')}
+        {/* ========================================================= */}
+        {/* TAB 3: MERGE (New Media Merger Engine)                    */}
+        {/* ========================================================= */}
+        {activeTab === 'merge' && (
+          <div className="animate-fadeIn">
+            <MergeView
+              files={downloadedFiles}
+              onMergeComplete={fetchDownloadedFiles}
+              onOpenFolder={handleOpenFolder}
               onDownloadFile={handleDownloadFile}
             />
           </div>
         )}
-
-        {/* Downloaded Files Gallery / List */}
-        <div className="mt-2">
-          <DownloadedList
-            files={downloadedFiles}
-            onRefresh={fetchDownloadedFiles}
-            onDelete={handleDeleteFile}
-            onDeleteMultiple={handleDeleteMultiple}
-            onDeleteAll={handleDeleteAll}
-            onDownloadFile={handleDownloadFile}
-            onOpenFolder={handleOpenFolder}
-            loading={loadingFiles}
-          />
-        </div>
       </main>
 
       {/* Footer */}
       <footer className="border-t border-slate-900 py-6 text-center text-xs text-slate-500">
         <div className="max-w-5xl mx-auto px-4 flex flex-col sm:flex-row items-center justify-between gap-3">
-          <p>© 2026 StreamVault • Full-stack YouTube Downloader</p>
+          <p>© 2026 StreamVault • Full-stack YouTube Downloader & Media Merger</p>
           <p className="flex items-center gap-2">
             <span>Powered by Node.js</span>
             <span>•</span>

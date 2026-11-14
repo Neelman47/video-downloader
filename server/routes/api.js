@@ -2,6 +2,7 @@ import express from 'express';
 import crypto from 'crypto';
 import path from 'path';
 import fs from 'fs';
+import multer from 'multer';
 import {
   analyzeVideo,
   analyzePlaylist,
@@ -19,6 +20,7 @@ import {
   getDownloadsDir,
   SUBFOLDERS
 } from '../services/storage.js';
+import { executeMerge, cancelMergeJob } from '../services/merger.js';
 
 const router = express.Router();
 
@@ -39,6 +41,30 @@ function notifySse(jobId, data) {
     }
   }
 }
+
+// Multer storage for uploaded external files
+const tempUploadsDir = path.join(getDownloadsDir(), '.temp_uploads');
+if (!fs.existsSync(tempUploadsDir)) {
+  try { fs.mkdirSync(tempUploadsDir, { recursive: true }); } catch (e) {}
+}
+
+const multerStorage = multer.diskStorage({
+  destination: (req, file, cb) => {
+    if (!fs.existsSync(tempUploadsDir)) {
+      try { fs.mkdirSync(tempUploadsDir, { recursive: true }); } catch (e) {}
+    }
+    cb(null, tempUploadsDir);
+  },
+  filename: (req, file, cb) => {
+    const ext = path.extname(file.originalname);
+    cb(null, `upload_${Date.now()}_${crypto.randomBytes(6).toString('hex')}${ext}`);
+  }
+});
+
+const upload = multer({
+  storage: multerStorage,
+  limits: { fileSize: 4 * 1024 * 1024 * 1024 } // 4 GB max file size
+});
 
 // 1. System status check
 router.get('/system/status', (req, res) => {
@@ -267,13 +293,136 @@ router.post('/download/cancel/:jobId', (req, res) => {
   res.status(400).json({ error: result.error });
 });
 
-// 9. List downloaded files across all subfolders
+// 9. NEW FEATURE: Merge Video, Audio, and (Optional) Subtitles
+router.post('/merge', upload.fields([
+  { name: 'videoFile', maxCount: 1 },
+  { name: 'audioFile', maxCount: 1 },
+  { name: 'subtitleFile', maxCount: 1 }
+]), (req, res) => {
+  const uploadedFiles = req.files || {};
+  const videoPath = uploadedFiles.videoFile?.[0]?.path || req.body.videoPath;
+  const audioPath = uploadedFiles.audioFile?.[0]?.path || req.body.audioPath;
+  const subtitlePath = uploadedFiles.subtitleFile?.[0]?.path || req.body.subtitlePath;
+
+  const { outputName, container = 'mp4', subtitleMode = 'soft' } = req.body;
+
+  if (!videoPath) {
+    return res.status(400).json({ error: 'Video file input is required' });
+  }
+  if (!audioPath) {
+    return res.status(400).json({ error: 'Audio file input is required' });
+  }
+
+  const jobId = crypto.randomUUID();
+  const initialJobState = {
+    jobId,
+    type: 'merge',
+    videoPath,
+    audioPath,
+    subtitlePath: subtitlePath || null,
+    outputName: outputName || '',
+    container,
+    subtitleMode,
+    status: 'starting',
+    percent: '10%',
+    message: 'Initializing media merge...',
+    createdAt: new Date().toISOString()
+  };
+
+  jobStore.set(jobId, initialJobState);
+
+  // Helper to cleanup any temporary upload files
+  const cleanupUploads = () => {
+    try {
+      if (uploadedFiles.videoFile?.[0]?.path && fs.existsSync(uploadedFiles.videoFile[0].path)) {
+        fs.unlinkSync(uploadedFiles.videoFile[0].path);
+      }
+      if (uploadedFiles.audioFile?.[0]?.path && fs.existsSync(uploadedFiles.audioFile[0].path)) {
+        fs.unlinkSync(uploadedFiles.audioFile[0].path);
+      }
+      if (uploadedFiles.subtitleFile?.[0]?.path && fs.existsSync(uploadedFiles.subtitleFile[0].path)) {
+        fs.unlinkSync(uploadedFiles.subtitleFile[0].path);
+      }
+    } catch (e) {}
+  };
+
+  executeMerge(jobId, {
+    videoPath,
+    audioPath,
+    subtitlePath,
+    outputName,
+    container,
+    subtitleMode
+  }, {
+    onProgress: (progress) => {
+      const current = jobStore.get(jobId) || initialJobState;
+      const updated = { ...current, ...progress, updatedAt: new Date().toISOString() };
+      jobStore.set(jobId, updated);
+      notifySse(jobId, updated);
+    },
+    onComplete: (result) => {
+      cleanupUploads();
+      const current = jobStore.get(jobId) || initialJobState;
+      const completedState = {
+        ...current,
+        ...result,
+        percent: '100%',
+        status: 'completed',
+        completedAt: new Date().toISOString()
+      };
+      jobStore.set(jobId, completedState);
+      notifySse(jobId, completedState);
+
+      setTimeout(() => {
+        const clients = sseClients.get(jobId);
+        if (clients) {
+          for (const c of clients) {
+            try { c.end(); } catch (e) {}
+          }
+          sseClients.delete(jobId);
+        }
+      }, 3000);
+    },
+    onError: (err) => {
+      cleanupUploads();
+      const current = jobStore.get(jobId) || initialJobState;
+      const errorState = {
+        ...current,
+        status: 'error',
+        error: err.message || 'Merge failed',
+        failedAt: new Date().toISOString()
+      };
+      jobStore.set(jobId, errorState);
+      notifySse(jobId, errorState);
+    }
+  });
+
+  res.json({ ok: true, jobId });
+});
+
+// 10. Cancel merge
+router.post('/merge/cancel/:jobId', (req, res) => {
+  const { jobId } = req.params;
+  const result = cancelMergeJob(jobId);
+  if (result.success) {
+    const job = jobStore.get(jobId);
+    if (job) {
+      const cancelledState = { ...job, status: 'cancelled', message: 'Merge cancelled by user' };
+      jobStore.set(jobId, cancelledState);
+      notifySse(jobId, cancelledState);
+    }
+    return res.json({ ok: true });
+  }
+  res.status(400).json({ error: result.error });
+});
+
+// 11. List downloaded files across all subfolders
 router.get('/files', (req, res) => {
   const files = listDownloadedFiles();
   res.json({ ok: true, data: files });
 });
 
-// 10. Delete single downloaded file (by relative path or name)
+// 12. Delete single downloaded file (by relative path or name)
 router.delete('/files/:fileName', (req, res) => {
   const { fileName } = req.params;
   const result = deleteDownloadedFile(fileName);
@@ -283,7 +432,7 @@ router.delete('/files/:fileName', (req, res) => {
   res.status(404).json({ error: result.error });
 });
 
-// 11. Delete multiple selected files
+// 13. Delete multiple selected files
 router.post('/files/delete-multiple', (req, res) => {
   const { files } = req.body;
   if (!Array.isArray(files) || files.length === 0) {
@@ -293,13 +442,13 @@ router.post('/files/delete-multiple', (req, res) => {
   res.json({ ok: true, data: result });
 });
 
-// 12. Delete ALL downloaded files
+// 14. Delete ALL downloaded files
 router.post('/files/delete-all', (req, res) => {
   const result = deleteAllFiles();
   res.json({ ok: true, data: result });
 });
 
-// 13. Download file to browser (supports relative path in query or route param)
+// 15. Download file to browser (supports relative path in query or route param)
 function handleFileSend(targetRelOrName, res) {
   const cleanRelative = targetRelOrName.replace(/^[\/\\]+/, '').replace(/\.\.[\/\\]/g, '');
   const downloadsDir = getDownloadsDir();
@@ -331,7 +480,7 @@ router.get('/files/download/:fileName', (req, res) => {
   return handleFileSend(req.params.fileName, res);
 });
 
-// 14. Open downloads folder in File Explorer / Finder / xdg-open
+// 16. Open downloads folder in File Explorer / Finder / xdg-open
 router.post('/files/open-folder', (req, res) => {
   const { subfolder = '' } = req.body || {};
   const result = openDownloadsFolder(subfolder);

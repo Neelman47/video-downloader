@@ -14,7 +14,8 @@ export const SUBFOLDERS = {
   AUDIO: 'audio',
   SUBTITLES: 'subtitles',
   CLIPS: 'clips',
-  PLAYLISTS: 'playlists'
+  PLAYLISTS: 'playlists',
+  MERGED: 'merged_items'
 };
 
 // Ensure downloads directory and subdirectories exist
@@ -110,7 +111,9 @@ export function listDownloadedFiles() {
             type = 'subtitle';
           }
 
-          if (relativeDir.startsWith(SUBFOLDERS.CLIPS)) {
+          if (relativeDir.startsWith(SUBFOLDERS.MERGED)) {
+            category = 'merged';
+          } else if (relativeDir.startsWith(SUBFOLDERS.CLIPS)) {
             category = 'clips';
           } else if (relativeDir.startsWith(SUBFOLDERS.PLAYLISTS)) {
             category = 'playlists';
